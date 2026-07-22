@@ -3,11 +3,22 @@
   "dependencies": { "com.unity.burst": "1.8.8", "com.unity.collections": "2.1.4", "com.unity.mathematics": "1.2.6" },
   "description": "4D Gaussian Splatting rendering and tools (fork of aras-p/UnityGaussianSplatting)",
   "displayName": "ITHACA 4D Gaussian Splatting",
+  "documentationUrl": "https://github.com/frenchtouchXR/ithaca-4dgs-unity#readme",
   "keywords": [ "unity", "gaussian-splatting", "4d", "ithaca" ],
   "license": "MIT",
   "name": "com.frenchtouchfactory.ithaca-4dgs",
-  "repository": "github:frenchtouchXR/ithaca-4dgs-unity",
-  "unity": "2022.3",
-  "unityRelease": "7f1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/frenchtouchXR/ithaca-4dgs-unity.git"
+  },
+  "samples": [
+    {
+      "displayName": "Demo Scene",
+      "description": "A preconfigured scene with a Gaussian4DSplatRenderer + Gaussian4DPlayer GameObject. Assign your own Gaussian Splat asset (created via Gaussian Splat > Create GaussianSplat Asset) to see it in action.",
+      "path": "Samples~/Demo Scene"
+    }
+  ],
+  "unity": "6000.0",
+  "unityRelease": "77f1",
   "version": "0.1.0"
 }

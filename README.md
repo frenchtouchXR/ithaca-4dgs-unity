@@ -40,6 +40,15 @@ Asset → Renderer → **Renderer Features**):
 `GaussianSplatURPFeature` must be listed **before** `Gaussian4DURPFeature`, otherwise occlusion
 between a 3D environment and a 4D actor will be incorrect.
 
+### Demo assets
+
+The sample scene included in this repository references Gaussian Splat assets that are too
+large to store in Git. Download them here:
+[Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
+
+Extract the archive into `Assets/GS_scenes/` and `Assets/GaussianAssets/` at the root of the
+project (recreate these folders if needed), then open the sample scene.
+
 ### Creating a Gaussian Splat asset
 
 [![Asset Creator](docs/Images/Screenshot_2.webp)](docs/Images/Screenshot_2.webp)
