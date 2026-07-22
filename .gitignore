@@ -1,0 +1,61 @@
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Unity3D generated meta files that don't need tracking issues
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# Unity3D Generated File On Crash Reports
+sysinfo.txt
+
+# Builds
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Crashlytics generated file
+crashlytics-build.properties
+
+# Packages (managed by Unity Package Manager, resolved via manifest.json)
+/[Pp]ackages/com.unity.*
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Données de test (PLY sources + assets Gaussian Splat générés) -- trop volumineuses pour
+# un dépôt de package, et sans valeur pour quelqu'un qui installe le package. Génèrez vos
+# propres assets via Gaussian Splat > Create GaussianSplat Asset a partir de votre PLY.
+/Assets/GS_scenes/
+/Assets/GaussianAssets/
+
+# Build Profiles générés automatiquement, non configurés intentionnellement
+/Assets/Settings/Build Profiles/

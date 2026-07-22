@@ -1,0 +1,13 @@
+{
+  "author": "Aras Pranckevičius (original 3D Gaussian Splatting renderer); French Touch Factory / ITHACA (4D extension)",
+  "dependencies": { "com.unity.burst": "1.8.8", "com.unity.collections": "2.1.4", "com.unity.mathematics": "1.2.6" },
+  "description": "4D Gaussian Splatting rendering and tools (fork of aras-p/UnityGaussianSplatting)",
+  "displayName": "ITHACA 4D Gaussian Splatting",
+  "keywords": [ "unity", "gaussian-splatting", "4d", "ithaca" ],
+  "license": "MIT",
+  "name": "com.frenchtouchfactory.ithaca-4dgs",
+  "repository": "github:frenchtouchXR/ithaca-4dgs-unity",
+  "unity": "2022.3",
+  "unityRelease": "7f1",
+  "version": "0.1.0"
+}
