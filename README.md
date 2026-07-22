@@ -26,6 +26,21 @@ Universal Render Pipeline — "Universal 3D" template), and open the sample scen
 Copy the `Packages/com.frenchtouchfactory.ithaca-4dgs/` folder into your own project's
 `Packages/` directory.
 
+### Installing via Package Manager (Git URL)
+
+Alternatively, install directly from this repository without cloning it: in your project, open
+`Window > Package Manager`, click the **+** button → **Install package from git URL...**, and
+paste:
+
+https://github.com/frenchtouchXR/ithaca-4dgs-unity.git?path=/Packages/com.frenchtouchfactory.ithaca-4dgs
+
+
+This requires a Git client (2.14.0+) installed and available on your system `PATH`. Once
+installed, a **Demo Scene** sample is available from the package's page in Package Manager
+(**Samples** section) — click **Import** to add it to your project. As with the sample scene
+in this repository, it references Gaussian Splat assets that must be generated separately;
+see [Demo assets](#demo-assets) below.
+
 ### Render Pipeline setup
 
 Both the 3D and the 4D rendering paths are implemented as separate URP Renderer Features, and

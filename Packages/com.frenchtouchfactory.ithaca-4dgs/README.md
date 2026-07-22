@@ -8,8 +8,19 @@ with temporal playback support.
 See the [full project README](https://github.com/frenchtouchXR/ithaca-4dgs-unity#readme) for
 setup instructions, screenshots, and usage details.
 
-The "Demo Scene" sample (importable via Package Manager) needs Gaussian Splat assets that are
-not bundled with the package — download them here:
+## Installing this sample
+
+This package can be installed directly via git URL, without cloning the repository: in
+`Window > Package Manager`, click **+** → **Install package from git URL...**, and paste:
+
+https://github.com/frenchtouchXR/ithaca-4dgs-unity.git?path=/Packages/com.frenchtouchfactory.ithaca-4dgs
+
+
+Once installed, import the **Demo Scene** sample from this package's page in Package Manager
+(**Samples** section, **Import** button).
+
+The "Demo Scene" sample needs Gaussian Splat assets that are not bundled with the package —
+download them here:
 [Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
 
 ## Requirements
