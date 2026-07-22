@@ -24,9 +24,7 @@ Universal Render Pipeline — "Universal 3D" template), and open the sample scen
 ### Installing in an existing project
 
 Copy the `Packages/com.frenchtouchfactory.ithaca-4dgs/` folder into your own project's
-`Packages/` directory. The package's code lives entirely under the `GaussianSplatting4D`
-namespace (rather than `GaussianSplatting`), so it can coexist in the same project as the
-original aras-p plugin without name clashes.
+`Packages/` directory.
 
 ### Render Pipeline setup
 
@@ -46,8 +44,9 @@ The sample scene included in this repository references Gaussian Splat assets th
 large to store in Git. Download them here:
 [Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
 
-Extract the archive into `Assets/GS_scenes/` and `Assets/GaussianAssets/` at the root of the
-project (recreate these folders if needed), then open the sample scene.
+Extract the archive's PLY files into `Assets/GS_scenes/` at the root of the project (create
+the folder if needed), then generate the corresponding GaussianSplat assets yourself using
+`Gaussian Splat > Create GaussianSplat Asset` (see below) before opening the sample scene.
 
 ### Creating a Gaussian Splat asset
 
