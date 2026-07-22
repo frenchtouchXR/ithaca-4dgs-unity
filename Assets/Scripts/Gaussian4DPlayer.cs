@@ -12,6 +12,7 @@ using UnityEditor;
 
 namespace ITHACA
 {
+    [ExecuteInEditMode]
     [RequireComponent(typeof(Gaussian4DSplatRenderer))]
     public class Gaussian4DPlayer : MonoBehaviour
     {
@@ -52,6 +53,15 @@ namespace ITHACA
             // champ soit remis a null -- OnDisable() ci-dessous s'en charge desormais.
             if (m_GpuTemporalData == null && temporalDataAsset != null)
                 UploadTemporalData();
+#if UNITY_EDITOR
+            // Etat de repos en editeur (lancement Unity / ouverture de scene) : toujours
+            // repartir de t=0 tant que l'utilisateur n'a pas touche le slider Preview Time
+            // lui-meme -- previewTime est un champ serialise qui peut sinon rester bloque sur
+            // sa derniere valeur scrubee avant la fermeture de la scene ou avant un Play.
+            if (!Application.isPlaying)
+                previewTime = 0f;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+#endif
             if (m_GpuTemporalData != null)
             {
                 m_Renderer.m_GpuTemporalDummy = m_GpuTemporalData;
@@ -68,7 +78,24 @@ namespace ITHACA
             // forcer une vraie recreation au prochain OnEnable, au lieu de reassigner un buffer
             // deja detruit -- c'etait la cause du bug d'affichage au second enable.
             m_GpuTemporalData = null;
+#if UNITY_EDITOR
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+#endif
         }
+
+#if UNITY_EDITOR
+        // Sortie de Play : Unity restaure previewTime a sa valeur d'AVANT le Play (comportement
+        // natif de serialisation), pas forcement 0 si le slider avait ete deplace auparavant --
+        // on force explicitement le retour a t=0 ici, apres coup.
+        void OnPlayModeStateChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.EnteredEditMode)
+            {
+                previewTime = 0f;
+                RefreshEditorDisplay();
+            }
+        }
+#endif
 
         public void RefreshEditorDisplay()
         {
@@ -115,7 +142,12 @@ namespace ITHACA
 
         void Update()
         {
-            if (!m_IsPlaying)
+            // Garde explicite sur Application.isPlaying, pas seulement m_IsPlaying : avec
+            // [ExecuteInEditMode], Start() peut se declencher aussi en mode edition, ce qui
+            // appellerait Play() (si playOnStart coche) et mettrait m_IsPlaying a true hors
+            // Run -- Update() ne tournant alors qu'au gre des repaints editeur (mouvements de
+            // souris, etc.), previewTime avancerait de facon erratique et non voulue.
+            if (!Application.isPlaying || !m_IsPlaying)
             {
                 SetCurrentTime(previewTime);
                 return;
