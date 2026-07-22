@@ -1,11 +1,11 @@
 ﻿// SPDX-License-Identifier: MIT
 
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Runtime;
 using UnityEditor;
 using UnityEditor.EditorTools;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor
+namespace GaussianSplatting4D.Editor
 {
     /* not working correctly yet
     [EditorTool("Gaussian Rotate Tool", typeof(GaussianSplatRenderer), typeof(GaussianToolContext))]

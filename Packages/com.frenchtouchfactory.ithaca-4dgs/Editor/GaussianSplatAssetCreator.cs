@@ -4,8 +4,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.IO;
-using GaussianSplatting.Editor.Utils;
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Editor.Utils;
+using GaussianSplatting4D.Runtime;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -15,7 +15,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 
-namespace GaussianSplatting.Editor
+namespace GaussianSplatting4D.Editor
 {
     [BurstCompile]
     public class GaussianSplatAssetCreator : EditorWindow

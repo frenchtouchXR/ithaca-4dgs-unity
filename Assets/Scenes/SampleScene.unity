@@ -520,8 +520,8 @@ MonoBehaviour:
   m_SplatScale: 1
   m_MaxSplatSize: 0
   m_MinSplatOpacity: 0
-  m_TemporalCutoff: 0.05
-  m_Is4D: 0
+  m_TemporalCutoff: 0
+  m_Is4D: 1
   m_OpacityScale: 1
   m_SHOrder: 3
   m_SHOnly: 0

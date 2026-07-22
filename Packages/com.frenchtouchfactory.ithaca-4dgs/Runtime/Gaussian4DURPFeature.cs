@@ -11,7 +11,7 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.Rendering.RenderGraphModule;
 
-namespace GaussianSplatting.Runtime
+namespace GaussianSplatting4D.Runtime
 {
     // Note: I have no idea what is the purpose of ScriptableRendererFeature vs ScriptableRenderPass, which one of those
     // is supposed to do resource management vs logic, etc. etc. Code below "seems to work" but I'm just fumbling along,

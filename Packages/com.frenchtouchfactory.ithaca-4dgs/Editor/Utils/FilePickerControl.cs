@@ -8,7 +8,7 @@ using UnityEditor;
 using UnityEditor.Experimental;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor.Utils
+namespace GaussianSplatting4D.Editor.Utils
 {
     public class FilePickerControl
     {

@@ -6,7 +6,7 @@ using UnityEngine.Rendering.HighDefinition;
 using UnityEngine.Rendering;
 using UnityEngine.Experimental.Rendering;
 
-namespace GaussianSplatting.Runtime
+namespace GaussianSplatting4D.Runtime
 {
     // Note: I have no idea what is the proper usage of CustomPass.
     // Code below "seems to work" but I'm just fumbling along, without understanding any of it.

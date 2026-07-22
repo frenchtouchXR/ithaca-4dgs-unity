@@ -4,15 +4,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Runtime;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEditor.EditorTools;
 using UnityEngine;
-using GaussianSplatRenderer = GaussianSplatting.Runtime.GaussianSplatRenderer;
+using GaussianSplatRenderer = GaussianSplatting4D.Runtime.GaussianSplatRenderer;
 
-namespace GaussianSplatting.Editor
+namespace GaussianSplatting4D.Editor
 {
     [CustomEditor(typeof(GaussianSplatRenderer))]
     [CanEditMultipleObjects]

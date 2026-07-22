@@ -2,7 +2,7 @@
 
 using Unity.Mathematics;
 
-namespace GaussianSplatting.Runtime
+namespace GaussianSplatting4D.Runtime
 {
     public static class GaussianUtils
     {

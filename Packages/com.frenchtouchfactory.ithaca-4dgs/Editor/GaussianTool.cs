@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Runtime;
 using UnityEditor.EditorTools;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor
+namespace GaussianSplatting4D.Editor
 {
     abstract class GaussianTool : EditorTool
     {

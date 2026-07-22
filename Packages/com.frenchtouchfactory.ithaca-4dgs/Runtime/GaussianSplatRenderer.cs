@@ -12,7 +12,7 @@ using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.XR;
 
-namespace GaussianSplatting.Runtime
+namespace GaussianSplatting4D.Runtime
 {
     class GaussianSplatRenderSystem
     {

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Runtime;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEditor;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor
+namespace GaussianSplatting4D.Editor
 {
     [CustomEditor(typeof(GaussianSplatAsset))]
     [CanEditMultipleObjects]

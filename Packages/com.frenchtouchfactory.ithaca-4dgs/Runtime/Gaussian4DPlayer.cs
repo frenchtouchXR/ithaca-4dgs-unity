@@ -4,13 +4,13 @@
 using System;
 using System.IO;
 using UnityEngine;
-using GaussianSplatting.Runtime;
+using GaussianSplatting4D.Runtime;
 
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
 
-namespace ITHACA
+namespace GaussianSplatting4D.Runtime
 {
     [ExecuteInEditMode]
     [RequireComponent(typeof(Gaussian4DSplatRenderer))]
