@@ -30,13 +30,6 @@ download them here:
 - DirectX 12 or Vulkan on Windows (DirectX 11 is not supported — GPU sorting requires wave
   intrinsics unavailable on that API)
 
-## Known limitations
-
-- Only the **VeryHigh** asset quality preset is currently validated for temporal (4D) assets.
-  Compressed presets (Medium, Low, High) quantize position/rotation/scale data, which appears
-  to interact badly with the temporal covariance computation and can produce chaotic, jumbled
-  geometry.
-
 ## What's included
 
 - `Runtime/Gaussian4DSplatRenderer.cs` — 4D renderer, GPU binding of the temporal buffer

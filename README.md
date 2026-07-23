@@ -96,13 +96,6 @@ actors in the same scene.
 **Note:** leave `SH Only` unchecked on `Gaussian4DSplatRenderer` — it's a debug visualization
 mode that isolates the spherical-harmonics contribution and forces a grayscale render.
 
-## Known limitations
-
-Only the **VeryHigh** asset quality preset is currently validated for temporal (4D) assets.
-Compressed presets (Medium, Low, High) quantize position/rotation/scale data, which appears to
-interact badly with the temporal covariance computation and can produce chaotic, jumbled
-geometry. Use VeryHigh when generating a temporal asset until this is investigated further.
-
 ## What's different from the original project
 
 | Area | Change |
