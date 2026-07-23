@@ -306,6 +306,16 @@ namespace GaussianSplatting4D.Editor
             string pathSh = $"{m_OutputFolder}/{baseName}_shs.bytes";
             string pathTemporal = $"{m_OutputFolder}/{baseName}_tmp.bytes";
 
+            // Le buffer temporel doit lire les donnees BRUTES (notamment scale, en log reel) --
+            // CreateChunkData() ci-dessous reecrit inputSplats[i].scale EN PLACE (pow(1/8) puis
+            // normalisation [0,1] par chunk), pour les presets compresses (Medium/Low/High/VeryLow).
+            // Generer le buffer temporel AVANT ce remaniement, sinon Calc4DOffset (cote GPU) recoit
+            // un log() d'une valeur deja transformee/normalisee au lieu de la vraie echelle, ce qui
+            // fait exploser numeriquement la covariance temporelle (gaussiennes regroupees en boule
+            // chaotique) -- reproductible uniquement sur les presets utilisant des chunks, jamais sur
+            // VeryHigh (qui ne chunke pas, cf. isUsingChunks).
+            CreateTemporalData(inputSplats, pathTemporal, ref dataHash);
+
             // if we are using full lossless (FP32) data, then do not use any chunking, and keep data as-is
             bool useChunks = isUsingChunks;
             if (useChunks)
@@ -314,7 +324,6 @@ namespace GaussianSplatting4D.Editor
             CreateOtherData(inputSplats, pathOther, ref dataHash, splatSHIndices);
             CreateColorData(inputSplats, pathCol, ref dataHash);
             CreateSHData(inputSplats, pathSh, ref dataHash, clusteredSHs);
-            CreateTemporalData(inputSplats, pathTemporal, ref dataHash);
             asset.SetDataHash(dataHash);
 
             splatSHIndices.Dispose();
