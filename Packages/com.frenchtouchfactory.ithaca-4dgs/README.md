@@ -28,7 +28,12 @@ download them here:
 - Unity 6000.0 or later
 - Universal Render Pipeline (URP)
 - DirectX 12 or Vulkan on Windows (DirectX 11 is not supported — GPU sorting requires wave
-  intrinsics unavailable on that API)
+  intrinsics unavailable on that API). Set this in `Project Settings > Player > Other Settings
+  > Graphics APIs for Windows`.
+- Both `GaussianSplatURPFeature` and `Gaussian4DURPFeature` must be added to your active URP
+  Renderer asset, reachable via `Project Settings > Graphics` → Pipeline Asset → Renderer, or
+  by searching `t:UniversalRendererData` in the Project window. The 3D feature must be listed
+  before the 4D one.
 
 ## What's included
 

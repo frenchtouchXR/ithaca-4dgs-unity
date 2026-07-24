@@ -41,11 +41,23 @@ installed, a **Demo Scene** sample is available from the package's page in Packa
 in this repository, it references Gaussian Splat assets that must be generated separately;
 see [Demo assets](#demo-assets) below.
 
+### Graphics API
+
+⚠️ **DX12 or Vulkan required on Windows — DX11 will not work.** GPU sorting relies on wave
+intrinsics unavailable on DX11. Set this in `Project Settings > Player > Other Settings >
+Graphics APIs for Windows` (remove Direct3D11, add Direct3D12 and/or Vulkan). Unity will
+prompt to restart the editor after this change.
+
 ### Render Pipeline setup
 
 Both the 3D and the 4D rendering paths are implemented as separate URP Renderer Features, and
-**both must be added** to your active Renderer asset (`Project Settings > Graphics` → Pipeline
-Asset → Renderer → **Renderer Features**):
+**both must be added** to your active Renderer asset. Reach it either way:
+
+- `Project Settings > Graphics` → Pipeline Asset → Renderer → **Renderer Features**, or
+- in the **Project** window, search `t:UniversalRendererData` to find the Renderer asset
+  directly and add the features in its Inspector.
+
+Add both:
 
 - `GaussianSplatURPFeature` — static 3D splats (unmodified from aras-p)
 - `Gaussian4DURPFeature` — animated 4D splats
