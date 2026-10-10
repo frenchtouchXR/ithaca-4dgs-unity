@@ -50,6 +50,8 @@ uint _SplatCount;
 RWStructuredBuffer<float3> _SplatPosDisplaced;
 float _PosDisplacedReady;
 float _Is4D;
+// Format du buffer temporel (GaussianSplatAsset.TemporalFormat) : 0 = 4C4D (52 octets/splat), 1 = FreeTimeGS (32 octets/splat)
+float _TemporalMode;
 
 // radix sort etc. friendly, see http://stereopsis.com/radix.html
 uint FloatToSortableUint(float f)
@@ -282,6 +284,31 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
 
     SplatData splat = LoadSplatData(idx);
     SplatViewData view = (SplatViewData)0;
+    float3 delta_mean; float marginal_t; float3 cov3d0_4d; float3 cov3d1_4d;
+    float3 scale_lin;   // echelle lineaire (filtre de taille)
+    if (_Is4D > 0.5 && _TemporalMode > 0.5)
+    {
+        // FreeTimeGS (8 floats = 32 bytes per splat) : gaussienne 3D classique (rotation/echelle de l'asset)
+        // deplacee par sa vitesse, opacite gaussienne en temps, nulle hors de la fenetre de sa sequence.
+        uint fAddr = idx * 32u;
+        float f_time = asfloat(_SplatTemporal.Load(fAddr));
+        float f_dur  = asfloat(_SplatTemporal.Load(fAddr + 4u));
+        float3 f_vel = float3(
+            asfloat(_SplatTemporal.Load(fAddr + 8u)),
+            asfloat(_SplatTemporal.Load(fAddr + 12u)),
+            asfloat(_SplatTemporal.Load(fAddr + 16u)));
+        float f_w0 = asfloat(_SplatTemporal.Load(fAddr + 20u));
+        float f_w1 = asfloat(_SplatTemporal.Load(fAddr + 24u));
+        float f_dt = _SplatCurrentTime - f_time;
+        delta_mean = f_vel * f_dt;
+        float f_x = f_dt / max(f_dur, 1e-6);
+        marginal_t = (_SplatCurrentTime < f_w0 || _SplatCurrentTime > f_w1) ? 0.0 : exp(-0.5 * f_x * f_x);
+        float3x3 rsm = CalcMatrixFromRotationScale(splat.rot, splat.scale);
+        CalcCovariance3D(rsm, cov3d0_4d, cov3d1_4d);
+        scale_lin = splat.scale;
+    }
+    else
+    {
     // 4D temporal (13 floats = 52 bytes per splat)
     uint tAddr = idx * 52u;
     float t_splat     = asfloat(_SplatTemporal.Load(tAddr));
@@ -301,7 +328,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         asfloat(_SplatTemporal.Load(tAddr + 44u)),
         asfloat(_SplatTemporal.Load(tAddr + 48u)));
     float dt = _SplatCurrentTime - t_splat;
-    float3 delta_mean; float marginal_t; float3 cov3d0_4d; float3 cov3d1_4d;
+    scale_lin = exp(scale_raw);
     if (_Is4D > 0.5)
     {
         Calc4DOffset(rot_l, scale_t_log, rot_r, exp(scale_raw), dt, delta_mean, marginal_t, cov3d0_4d, cov3d1_4d);
@@ -314,6 +341,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         float3x3 rsm = CalcMatrixFromRotationScale(splat.rot, splat.scale);
         CalcCovariance3D(rsm, cov3d0_4d, cov3d1_4d);
     }
+    }
     splat.pos += delta_mean;
     // Espace OBJET (local), avant mul(_MatrixObjectToWorld). CSCalcDistances applique
     // ensuite mul(_MatrixMV) avec _MatrixMV = worldToCam * objToWorld : même convention que LoadSplatPos.
@@ -325,14 +353,18 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     // Filtre taille intrinseque (axe lineaire, meme unite que le PLY)
     if (_MaxSplatSize > 0)
     {
-        float3 sl = exp(scale_raw);
+        float3 sl = scale_lin;
         if (max(sl.x, max(sl.y, sl.z)) > _MaxSplatSize)
             centerClipPos.w = 0;
     }
     // Prefilter temporel fidele a 4C4D (gaussian_renderer/__init__.py : mask = marginal_t > 0.05).
     // On teste marginal_t BRUT (composante temporelle seule), PAS l'opacite effective.
     // Coupe les gaussiennes hors de leur fenetre temporelle sans toucher aux utiles (marginal_t ~ 1).
-    if (_Is4D > 0.5 && _TemporalCutoff > 0 && marginal_t < _TemporalCutoff)
+    if (_Is4D > 0.5 && _TemporalMode < 0.5 && _TemporalCutoff > 0 && marginal_t < _TemporalCutoff)
+        centerClipPos.w = 0;
+    // FreeTimeGS : regle du lecteur navigateur, gaussienne coupee quand son opacite (base x temporelle) passe
+    // sous 1/255 -> apparitions en fondu, sans le saut a 5 % du seuil 4C4D sur marginal_t.
+    if (_Is4D > 0.5 && _TemporalMode > 0.5 && splat.opacity < 1.0 / 255.0)
         centerClipPos.w = 0;
     // Filtre opacite : couper les Gaussiennes flottantes (faible opacite de base).
     // TEST seuil en dur, a exposer si concluant.

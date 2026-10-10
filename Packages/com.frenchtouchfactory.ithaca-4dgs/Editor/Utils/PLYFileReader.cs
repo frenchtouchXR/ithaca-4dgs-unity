@@ -19,11 +19,13 @@ namespace GaussianSplatting4D.Editor.Utils
             if (!File.Exists(filePath))
                 return;
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, fs);
+            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, out _, fs);
         }
 
-        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, FileStream fs)
+        // Lignes "comment <cle> <valeur>" de l'en-tete (ex. FreeTimeGS : n_frames, min_duration)
+        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out Dictionary<string, string> comments, FileStream fs)
         {
+            comments = new Dictionary<string, string>();
             // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
             if (fs.Length >= 2 * 1024 * 1024 * 1024L)
                 throw new IOException($"PLY {filePath} read error: currently files larger than 2GB are not supported");
@@ -40,6 +42,8 @@ namespace GaussianSplatting4D.Editor.Utils
                 if (line == "end_header" || line.Length == 0)
                     break;
                 var tokens = line.Split(' ');
+                if (tokens.Length >= 2 && tokens[0] == "comment")
+                    comments[tokens[1]] = string.Join(" ", tokens.Skip(2));
                 if (tokens.Length == 3 && tokens[0] == "format" && tokens[1] == "binary_little_endian" && tokens[2] == "1.0")
                     got_binary_le = true;
                 if (tokens.Length == 3 && tokens[0] == "element" && tokens[1] == "vertex")
@@ -66,8 +70,13 @@ namespace GaussianSplatting4D.Editor.Utils
 
         public static void ReadFile(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out NativeArray<byte> vertices)
         {
+            ReadFile(filePath, out vertexCount, out vertexStride, out attrs, out _, out vertices);
+        }
+
+        public static void ReadFile(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out Dictionary<string, string> comments, out NativeArray<byte> vertices)
+        {
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, fs);
+            ReadHeaderImpl(filePath, out vertexCount, out vertexStride, out attrs, out comments, fs);
 
             vertices = new NativeArray<byte>(vertexCount * vertexStride, Allocator.Persistent);
             var readBytes = fs.Read(vertices);

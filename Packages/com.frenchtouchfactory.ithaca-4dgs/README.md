@@ -3,7 +3,8 @@
 Real-time 4D Gaussian Splatting rendering and asset generation for Unity (URP), with full
 3DGS/4DGS compatibility. A fork of
 [aras-p/UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting), extended
-with temporal playback support.
+with temporal playback support for 4C4D / 4DGS PLY files (`t`, `scale_t`, `rot_r_*`) and
+FreeTimeGS files (`.ftgs.ply`), detected automatically on import.
 
 See the [full project README](https://github.com/frenchtouchXR/ithaca-4dgs-unity#readme) for
 setup instructions, screenshots, and usage details.
@@ -42,8 +43,17 @@ download them here:
 - `Runtime/Gaussian4DPlayer.cs` — playback component (play/pause/stop/loop, editor preview)
 - `Runtime/GaussianSplatRenderer.cs`, `GaussianSplatURPFeature.cs` — unmodified 3D path from
   aras-p, for static environments alongside 4D actors
-- `Editor/GaussianSplatAssetCreator.cs` — asset creation menu, extended to read temporal PLY
-  attributes and emit a companion `*_tmp.bytes` file
+- `Editor/GaussianSplatAssetCreator.cs` — asset creation menu
+  (`Tools > Gaussian Splats > Create GaussianSplatAsset`), extended to read 4C4D and FreeTimeGS
+  temporal PLY attributes and emit a companion `*_tmp.bytes` file; the detected type
+  (3DGS / 4D 4C4D / 4D FreeTimeGS) is shown in the window, and every quality preset applies
+- `Shaders/Splat4DUtilities.compute` — temporal evaluation (4C4D conditional covariance, or
+  FreeTimeGS velocity, temporal opacity and sequence window)
+
+`Gaussian4DSplatRenderer` has an `sRGB Blending` option (on by default, per object) that
+composites the splats in sRGB like the training renders and the ITHACA browser player; turn it
+off for the original aras-p linear compositing. With a FreeTimeGS asset, `Gaussian4DPlayer` sets
+`Duration` to 1 (normalized time) and `Num Frames` to the asset's frame count.
 
 ## License
 

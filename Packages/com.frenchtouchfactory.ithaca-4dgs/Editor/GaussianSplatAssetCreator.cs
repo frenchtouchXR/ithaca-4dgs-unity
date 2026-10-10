@@ -51,6 +51,10 @@ namespace GaussianSplatting4D.Editor
         string m_PrevFilePath;
         int m_PrevVertexCount;
         long m_PrevFileSize;
+        TemporalKind m_PrevTemporalKind;
+        // renseignes par LoadInputSplatFile
+        TemporalKind m_TemporalKind;
+        FtgsHeaderInfo m_FtgsInfo;
 
         bool isUsingChunks =>
             m_FormatPos != GaussianSplatAsset.VectorFormat.Float32 ||
@@ -93,6 +97,7 @@ namespace GaussianSplatting4D.Editor
                 try
                 {
                     m_PrevVertexCount = GaussianFileReader.ReadFileHeader(m_InputFile);
+                    m_PrevTemporalKind = GaussianFileReader.ReadTemporalKind(m_InputFile);
                 }
                 catch (Exception ex)
                 {
@@ -104,7 +109,15 @@ namespace GaussianSplatting4D.Editor
             }
 
             if (m_PrevVertexCount > 0)
+            {
                 EditorGUILayout.LabelField("File Size", $"{EditorUtility.FormatBytes(m_PrevFileSize)} - {m_PrevVertexCount:N0} splats");
+                EditorGUILayout.LabelField("Type", m_PrevTemporalKind switch
+                {
+                    TemporalKind.FreeTimeGS => "4D FreeTimeGS (.ftgs.ply)",
+                    TemporalKind.FourC4D => "4D 4C4D",
+                    _ => "3DGS (static)"
+                });
+            }
             else
                 GUILayout.Space(EditorGUIUtility.singleLineHeight);
 
@@ -314,7 +327,15 @@ namespace GaussianSplatting4D.Editor
             // fait exploser numeriquement la covariance temporelle (gaussiennes regroupees en boule
             // chaotique) -- reproductible uniquement sur les presets utilisant des chunks, jamais sur
             // VeryHigh (qui ne chunke pas, cf. isUsingChunks).
-            CreateTemporalData(inputSplats, pathTemporal, ref dataHash);
+            if (m_TemporalKind == TemporalKind.FreeTimeGS)
+            {
+                CreateTemporalDataFTGS(inputSplats, pathTemporal, ref dataHash, m_FtgsInfo);
+                asset.SetTemporalInfo(GaussianSplatAsset.TemporalFormat.FreeTimeGS, m_FtgsInfo.nFrames, m_FtgsInfo.firstFrame, m_FtgsInfo.segments);
+                Debug.Log($"[GaussianSplatAssetCreator] FreeTimeGS : {m_FtgsInfo.nFrames} frames, {m_FtgsInfo.segments} sequence(s), " +
+                          $"fenetre de sequence {(m_FtgsInfo.hasWindow ? "oui" : "non")}");
+            }
+            else
+                CreateTemporalData(inputSplats, pathTemporal, ref dataHash);
 
             // if we are using full lossless (FP32) data, then do not use any chunking, and keep data as-is
             bool useChunks = isUsingChunks;
@@ -362,7 +383,7 @@ namespace GaussianSplatting4D.Editor
             }
             try
             {
-                GaussianFileReader.ReadFile(filePath, out data);
+                GaussianFileReader.ReadFile(filePath, out data, out m_TemporalKind, out m_FtgsInfo);
             }
             catch (Exception ex)
             {
@@ -1152,6 +1173,43 @@ namespace GaussianSplatting4D.Editor
             public float rot_r_x, rot_r_y, rot_r_z, rot_r_w;  // rot_r quaternion
             public float rot_l_x, rot_l_y, rot_l_z, rot_l_w;  // rot (left) quaternion raw
             public float scale_x, scale_y, scale_z;            // scale raw (log space)
+        }
+
+        // FreeTimeGS : 8 floats par splat (GaussianSplatAsset.kTemporalStrideFTGS), lus par Splat4DUtilities.compute
+        // (_TemporalMode = 1). Position et covariance spatiale sont celles du 3DGS (donnees compressees de l'asset) ;
+        // seuls le deplacement et l'opacite temporelle viennent d'ici :
+        //   position(t) = position + vitesse * (t - time)
+        //   opacite(t)  = opacite * exp(-0.5 * ((t - time) / duree)^2), nulle hors [win_start, win_end]
+        [StructLayout(LayoutKind.Sequential)]
+        struct SplatTemporalDataFTGS
+        {
+            public float time;                          // temps central normalise [0,1]
+            public float duration;                      // max(exp(log_duration), min_duration)
+            public float vel_x, vel_y, vel_z;           // deplacement par unite de temps normalise
+            public float win_start, win_end;            // fenetre de sequence elargie d'une demi-frame
+            public float reserved;
+        }
+
+        static void CreateTemporalDataFTGS(NativeArray<InputSplatData> inputSplats, string filePath, ref Hash128 dataHash, FtgsHeaderInfo info)
+        {
+            int count = inputSplats.Length;
+            float half = 0.5f / math.max(info.nFrames - 1, 1);   // meme marge que le lecteur navigateur et render_freetimegs.py
+            NativeArray<SplatTemporalDataFTGS> data = new NativeArray<SplatTemporalDataFTGS>(count, Allocator.TempJob);
+            for (int i = 0; i < count; i++)
+            {
+                var s = inputSplats[i];
+                Vector3 v = info.useVelocity ? s.ftgs_velocity : Vector3.zero;
+                data[i] = new SplatTemporalDataFTGS
+                {
+                    time = s.ftgs_time,
+                    duration = math.max(math.exp(s.ftgs_log_duration), math.max(info.minDuration, 1e-6f)),
+                    vel_x = v.x, vel_y = v.y, vel_z = v.z,
+                    win_start = info.hasWindow ? s.ftgs_seg_start - half : -1e30f,
+                    win_end = info.hasWindow ? s.ftgs_seg_end + half : 1e30f,
+                };
+            }
+            EmitSimpleDataFile(data, filePath, ref dataHash);
+            data.Dispose();
         }
 
         void CreateTemporalData(NativeArray<InputSplatData> inputSplats, string filePath, ref Hash128 dataHash)

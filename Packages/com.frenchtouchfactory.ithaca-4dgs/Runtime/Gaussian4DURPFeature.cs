@@ -85,10 +85,23 @@ namespace GaussianSplatting4D.Runtime
                         commandBuffer.SetGlobalTexture(s_gaussian4DSplatDepthRT, data.GaussianSplatDepthRT);
                         var mrt = new RenderTargetIdentifier[] { data.GaussianSplatRT, data.GaussianSplatDepthRT };
                         CoreUtils.SetRenderTarget(commandBuffer, mrt, data.SourceDepth, ClearFlag.Color, Color.clear);
-                        Material matComposite = Gaussian4DSplatRenderSystem.instance.SortAndRenderSplats(data.CameraData.camera, commandBuffer);
-                        commandBuffer.BeginSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
-                        Blitter.BlitCameraTexture(commandBuffer, data.GaussianSplatRT, data.SourceTexture, matComposite, 0);
-                        commandBuffer.EndSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
+                        // Une composition par groupe d'objets de meme mode de melange (m_SRGBBlending), du plus lointain
+                        // au plus proche. Un seul groupe dans le cas habituel : rendu identique a l'unique composition d'avant.
+                        var system = Gaussian4DSplatRenderSystem.instance;
+                        var groups = system.CompositeGroups();
+                        for (int g = groups.Count - 1; g >= 0; --g)
+                        {
+                            if (g != groups.Count - 1)
+                            {
+                                // texture intermediaire videe pour le groupe suivant ; la profondeur des splats s'accumule
+                                CoreUtils.SetRenderTarget(commandBuffer, (RenderTargetIdentifier)data.GaussianSplatRT, ClearFlag.Color, Color.clear);
+                                CoreUtils.SetRenderTarget(commandBuffer, mrt, data.SourceDepth);
+                            }
+                            Material matComposite = system.SortAndRenderSplats(data.CameraData.camera, commandBuffer, groups[g].start, groups[g].end);
+                            commandBuffer.BeginSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
+                            Blitter.BlitCameraTexture(commandBuffer, data.GaussianSplatRT, data.SourceTexture, matComposite, 0);
+                            commandBuffer.EndSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
+                        }
                     });
                 }
 

@@ -14,7 +14,7 @@
   "samples": [
     {
       "displayName": "Demo Scene",
-      "description": "A preconfigured scene with a Gaussian4DSplatRenderer + Gaussian4DPlayer GameObject. Assign your own Gaussian Splat asset (created via Gaussian Splat > Create GaussianSplat Asset) to see it in action.",
+      "description": "A preconfigured scene with a Gaussian4DSplatRenderer + Gaussian4DPlayer GameObject. Assign your own Gaussian Splat asset (created via Tools > Gaussian Splats > Create GaussianSplatAsset) to see it in action.",
       "path": "Samples~/Demo Scene"
     }
   ],

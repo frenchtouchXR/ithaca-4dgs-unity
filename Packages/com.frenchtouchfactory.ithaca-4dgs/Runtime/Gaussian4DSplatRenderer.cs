@@ -105,14 +105,49 @@ namespace GaussianSplatting4D.Runtime
         }
 
         // ReSharper disable once MemberCanBePrivate.Global - used by HDRP/URP features that are not always compiled
+        static readonly int s_CompositeGamma = Shader.PropertyToID("_CompositeGamma");
+
+        // Composition par groupes : les objets actifs (tries du plus proche au plus loin) sont regroupes en suites
+        // consecutives de meme m_SRGBBlending ; chaque groupe est dessine dans la texture intermediaire puis compose
+        // avec son propre mode, les groupes du plus lointain au plus proche. Un seul groupe (cas habituel : tous les
+        // objets avec le meme reglage) = une seule composition, exactement comme avant.
+        readonly List<(int start, int end)> m_CompositeGroups = new();
+
+        public List<(int start, int end)> CompositeGroups()
+        {
+            m_CompositeGroups.Clear();
+            int n = m_ActiveSplats.Count;
+            for (int start = 0; start < n;)
+            {
+                bool mode = m_ActiveSplats[start].Item1.m_SRGBBlending;
+                int end = start + 1;
+                while (end < n && m_ActiveSplats[end].Item1.m_SRGBBlending == mode)
+                    ++end;
+                m_CompositeGroups.Add((start, end));
+                start = end;
+            }
+            return m_CompositeGroups;
+        }
+
         public Material SortAndRenderSplats(Camera cam, CommandBuffer cmb)
         {
+            return SortAndRenderSplats(cam, cmb, 0, m_ActiveSplats.Count);
+        }
+
+        // Dessine les objets actifs [start, end) ; renvoie le materiau de composition, regle sur le mode du groupe
+        public Material SortAndRenderSplats(Camera cam, CommandBuffer cmb, int start, int end)
+        {
             Material matComposite = null;
-            foreach (var kvp in m_ActiveSplats)
+            for (int i = start; i < end; ++i)
             {
+                var kvp = m_ActiveSplats[i];
                 var gs = kvp.Item1;
                 gs.EnsureMaterials();
                 matComposite = gs.m_MatComposite;
+                if (matComposite != null)
+                {
+                    matComposite.SetFloat(s_CompositeGamma, gs.m_SRGBBlending ? 1f : 0f);
+                }
                 var mpb = kvp.Item2;
 
                 // sort
@@ -199,14 +234,24 @@ namespace GaussianSplatting4D.Runtime
             // way only works in BiRP so only do it here.
             m_CommandBuffer.SetGlobalTexture(Gaussian4DSplatRenderer.Props.CameraTargetTexture, BuiltinRenderTextureType.CameraTarget);
 
-            // add sorting, view calc and drawing commands for each splat object
-            Material matComposite = SortAndRenderSplats(cam, m_CommandBuffer);
+            // une composition par groupe de meme mode de melange, du plus lointain au plus proche
+            var groups = CompositeGroups();
+            for (int g = groups.Count - 1; g >= 0; --g)
+            {
+                if (g != groups.Count - 1)
+                {
+                    m_CommandBuffer.SetRenderTarget(Gaussian4DSplatRenderer.Props.GaussianSplatRT, BuiltinRenderTextureType.CurrentActive);
+                    m_CommandBuffer.ClearRenderTarget(RTClearFlags.Color, new Color(0, 0, 0, 0), 0, 0);
+                }
+                // add sorting, view calc and drawing commands for each splat object
+                Material matComposite = SortAndRenderSplats(cam, m_CommandBuffer, groups[g].start, groups[g].end);
 
-            // compose
-            m_CommandBuffer.BeginSample(s_ProfCompose);
-            m_CommandBuffer.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
-            m_CommandBuffer.DrawProcedural(Matrix4x4.identity, matComposite, 0, MeshTopology.Triangles, 3, 1);
-            m_CommandBuffer.EndSample(s_ProfCompose);
+                // compose
+                m_CommandBuffer.BeginSample(s_ProfCompose);
+                m_CommandBuffer.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+                m_CommandBuffer.DrawProcedural(Matrix4x4.identity, matComposite, 0, MeshTopology.Triangles, 3, 1);
+                m_CommandBuffer.EndSample(s_ProfCompose);
+            }
             m_CommandBuffer.ReleaseTemporaryRT(Gaussian4DSplatRenderer.Props.GaussianSplatRT);
         }
     }
@@ -242,6 +287,8 @@ namespace GaussianSplatting4D.Runtime
         public bool m_SHOnly;
         [Range(1,30)] [Tooltip("Sort splats only every N frames")]
         public int m_SortNthFrame = 1;
+        [Tooltip("Melange des splats en sRGB, comme a l'entrainement et dans le lecteur navigateur (contours et zones translucides fideles). Decoche : melange lineaire d'origine (aras-p), qui eclaircit les zones translucides.")]
+        public bool m_SRGBBlending = true;
 
         public RenderMode m_RenderMode = RenderMode.Splats;
         [Range(1.0f,15.0f)] public float m_PointDisplaySize = 3.0f;
@@ -269,6 +316,10 @@ namespace GaussianSplatting4D.Runtime
         internal GraphicsBuffer m_GpuView;
         public GraphicsBuffer m_GpuTemporalDummy;
         [HideInInspector] public float m_TemporalCurrentTime = 0f;
+
+        // Format du buffer temporel pour Splat4DUtilities.compute (_TemporalMode) : 0 = 4C4D, 1 = FreeTimeGS.
+        // Lu sur l'asset : les assets crees avant FreeTimeGS valent 0 (comportement inchange).
+        float TemporalMode => m_Asset != null && m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS ? 1f : 0f;
         internal GraphicsBuffer m_GpuIndexBuffer;
 
         // these buffers are only for splat editing, and are lazily created
@@ -314,6 +365,7 @@ namespace GaussianSplatting4D.Runtime
             public static readonly int MinSplatOpacity = Shader.PropertyToID("_MinSplatOpacity");
             public static readonly int TemporalCutoff = Shader.PropertyToID("_TemporalCutoff");
             public static readonly int Is4D = Shader.PropertyToID("_Is4D");
+            public static readonly int TemporalMode = Shader.PropertyToID("_TemporalMode");
             public static readonly int SplatOpacityScale = Shader.PropertyToID("_SplatOpacityScale");
             public static readonly int SplatSize = Shader.PropertyToID("_SplatSize");
             public static readonly int SplatCount = Shader.PropertyToID("_SplatCount");
@@ -696,6 +748,7 @@ namespace GaussianSplatting4D.Runtime
             // peut avoir ete change par le sort/un autre objet entre SetAssetDataOnCS et ici)
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SplatCount, m_SplatCount);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.Is4D, m_Is4D);
+            cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.TemporalMode, TemporalMode);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Shader.PropertyToID("_SplatCurrentTime"), m_TemporalCurrentTime);
             // re-bind du buffer temporel JUSTE avant le dispatch : il differe entre 4D (vrai buffer) et 3D (dummy),
             // et le binding sur le kernel partage est ecrase par l'autre objet (cause du telescopage 4D-vs-3D)

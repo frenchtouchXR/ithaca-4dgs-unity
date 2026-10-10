@@ -113,6 +113,24 @@ namespace GaussianSplatting4D.Runtime
             m_BoundsMax = bMax;
         }
 
+        // Format du buffer temporel (_tmp.bytes). Legacy4C4D = 0 : valeur des assets crees avant
+        // l'ajout de FreeTimeGS (3DGS et 4C4D), qui gardent donc exactement leur comportement.
+        public enum TemporalFormat
+        {
+            Legacy4C4D = 0,   // 13 floats (52 octets) par splat : t, scale_t, rot_r, rot brut, echelle brute
+            FreeTimeGS = 1,   // 8 floats (32 octets) par splat : time, duree, vitesse, fenetre, reserve
+        }
+        public const int kTemporalStride4C4D = 52;
+        public const int kTemporalStrideFTGS = 32;
+
+        public void SetTemporalInfo(TemporalFormat format, int frames, int firstFrame, int segments)
+        {
+            m_TemporalFormat = format;
+            m_TemporalFrames = frames;
+            m_TemporalFirstFrame = firstFrame;
+            m_TemporalSegments = segments;
+        }
+
         public void SetDataHash(Hash128 hash)
         {
             m_DataHash = hash;
@@ -218,6 +236,11 @@ namespace GaussianSplatting4D.Runtime
 
         [SerializeField] CameraInfo[] m_Cameras;
 
+        [SerializeField] TemporalFormat m_TemporalFormat = TemporalFormat.Legacy4C4D;
+        [SerializeField] int m_TemporalFrames;      // FreeTimeGS : frames couvertes par le temps [0,1]
+        [SerializeField] int m_TemporalFirstFrame;  // FreeTimeGS : premiere frame de la prise (ITHACA)
+        [SerializeField] int m_TemporalSegments;    // FreeTimeGS : sequences assemblees
+
         public VectorFormat posFormat => m_PosFormat;
         public VectorFormat scaleFormat => m_ScaleFormat;
         public SHFormat shFormat => m_SHFormat;
@@ -230,6 +253,11 @@ namespace GaussianSplatting4D.Runtime
         public TextAsset chunkData => m_ChunkData;
         public TextAsset temporalData => m_TemporalData;
         public CameraInfo[] cameras => m_Cameras;
+        public TemporalFormat temporalFormat => m_TemporalFormat;
+        public int temporalFrames => m_TemporalFrames;
+        public int temporalFirstFrame => m_TemporalFirstFrame;
+        public int temporalSegments => m_TemporalSegments;
+        public int temporalStride => m_TemporalFormat == TemporalFormat.FreeTimeGS ? kTemporalStrideFTGS : kTemporalStride4C4D;
 
         public struct ChunkInfo
         {

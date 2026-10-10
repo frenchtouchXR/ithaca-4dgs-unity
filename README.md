@@ -2,8 +2,8 @@
 
 This project extends [aras-p/UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting) — a
 realtime Gaussian Splatting visualization plugin for Unity — with support for **4D Gaussian
-Splatting** (temporal, dynamic scenes), while keeping full compatibility with the original 3D
-static workflow. A single project can freely mix a static 3D-splat environment with one or more
+Splatting** (temporal, dynamic scenes: 4C4D / 4DGS and FreeTimeGS models), while keeping full
+compatibility with the original 3D static workflow. A single project can freely mix a static 3D-splat environment with one or more
 animated 4D-splat actors, rendered together in the same scene.
 
 [![Screenshot](docs/Images/Screenshot_1.webp)](docs/Images/Screenshot_1.webp)
@@ -73,13 +73,13 @@ large to store in Git. Download them here:
 
 Extract the archive's PLY files into `Assets/GS_scenes/` at the root of the project (create
 the folder if needed), then generate the corresponding GaussianSplat assets yourself using
-`Gaussian Splat > Create GaussianSplat Asset` (see below) before opening the sample scene.
+`Tools > Gaussian Splats > Create GaussianSplatAsset` (see below) before opening the sample scene.
 
 ### Creating a Gaussian Splat asset
 
 [![Asset Creator](docs/Images/Screenshot_2.webp)](docs/Images/Screenshot_2.webp)
 
-Open `Gaussian Splat > Create GaussianSplat Asset` from the Unity menu. Point **Input PLY File**
+Open `Tools > Gaussian Splats > Create GaussianSplatAsset` from the Unity menu. Point **Input PLY/SPZ File**
 to your Gaussian Splat file:
 
 - A regular static PLY (from the original 3DGS paper, or any compatible tool) produces a
@@ -89,6 +89,16 @@ to your Gaussian Splat file:
   `rot_r_0..3` (produced by a compatible 4D Gaussian Splatting training pipeline) — also
   generates a `*_tmp.bytes` temporal data file alongside the regular asset, enabling animated
   playback.
+- A **FreeTimeGS** PLY (`.ftgs.ply`, format v1 of FreeTimeGsVanilla: per-splat `time`,
+  `log_duration`, `velocity_0..2`, and the `n_frames` / `min_duration` header comments) is
+  detected automatically and also produces a `*_tmp.bytes` file, in the FreeTimeGS layout.
+  Files assembled by the ITHACA pipeline (`assemble_ftgs.py`: several sequences in one file, or
+  one file per sequence for streaming) carry `seg_start` / `seg_end`: each splat is then only
+  shown within its own sequence, as in the ITHACA browser player. Colors of any SH degree are
+  accepted (the lightweight ITHACA export uses degree 1).
+
+The creator window shows the detected **Type** (3DGS / 4D 4C4D / 4D FreeTimeGS) under the file
+size. All quality presets work with every type.
 
 ### Setting up a 4D actor
 
@@ -97,6 +107,12 @@ to your Gaussian Splat file:
 - Assign your **Asset** field.
 - Add a `Gaussian4DPlayer` component — it auto-links the asset's temporal data, and exposes
   Play / Pause / Stop, looping, and a `Preview Time` scrubber usable directly in the editor.
+  With a FreeTimeGS asset, time is normalized over the whole take: `Duration` is set to 1 and
+  `Num Frames` to the asset's frame count automatically; playback speed is still set by `Fps`.
+- `sRGB Blending` (on by default, per object) on `Gaussian4DSplatRenderer` composites the splats in
+  sRGB, matching the training renders (4C4D and FreeTimeGS alike) and the ITHACA browser player; turn
+  it off for the original aras-p linear compositing, which brightens semi-transparent edges in Linear
+  color space projects.
 - Set the GameObject's **`Scale.y` to `-1`** — Gaussian Splat scenes are authored in COLMAP's
   right-handed coordinate system; this axis flip is the correct way to bring them into Unity's
   left-handed space (a rotation cannot fix a coordinate-system mirroring).
@@ -115,6 +131,8 @@ mode that isolates the spherical-harmonics contribution and forces a grayscale r
 | Rendering | New `Gaussian4DSplatRenderer` / `Gaussian4DURPFeature` / `Splat4DUtilities.compute`, implementing per-splat temporal displacement and conditional covariance, alongside the unmodified 3D path |
 | Playback | New `Gaussian4DPlayer` component: GPU upload of temporal data, Play/Pause/Stop/loop, editor preview scrubbing |
 | Asset pipeline | `GaussianFileReader` and `GaussianSplatAssetCreator` read the extra temporal PLY attributes and emit a companion `*_tmp.bytes` file |
+| FreeTimeGS | `.ftgs.ply` import (velocity, temporal opacity, sequence window), stored as `GaussianSplatAsset.TemporalFormat.FreeTimeGS`; rendered by the same `Gaussian4DSplatRenderer` / `Gaussian4DPlayer` |
+| Compositing | `sRGB Blending` option on `Gaussian4DSplatRenderer` (on by default, per object); the 3D `GaussianSplatRenderer` keeps the original compositing |
 | Namespacing | Everything lives under `GaussianSplatting4D.*` instead of `GaussianSplatting.*`, so both plugins can be installed side by side |
 
 ## License and External Code Used

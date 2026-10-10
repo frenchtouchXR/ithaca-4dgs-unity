@@ -31,10 +31,16 @@ v2f vert (uint vtxID : SV_VertexID)
 }
 
 Texture2D _GaussianSplatRT;
+float _CompositeGamma;   // 1 : melange sRGB (Gaussian4DSplatRenderer.m_SRGBBlending) ; 0 : melange lineaire d'origine
 
 half4 frag (v2f i) : SV_Target
 {
     half4 col = _GaussianSplatRT.Load(int3(i.vertex.xy, 0));
+    // Melange sRGB (comme l'entrainement et le lecteur navigateur) : la couleur premultipliee c*a est rendue
+    // telle quelle en sRGB, puis melangee au fond. Avec Blend SrcAlpha, on renvoie donc lin(c*a)/a.
+    // Melange lineaire d'origine : lin(c), qui eclaircit les zones translucides (contours).
+    if (_CompositeGamma > 0.5)
+        return float4(GammaToLinearSpace(col.rgb) / max(col.a, 1e-6), col.a);
     return float4(GammaToLinearSpace(col.rgb/col.a),col.a);
 }
 ENDCG

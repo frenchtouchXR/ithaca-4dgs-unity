@@ -29,6 +29,30 @@ namespace GaussianSplatting4D.Editor.Utils
         public Quaternion rot_r;
         // raw quaternion saved before LinearizeData (4 extra floats, mapped to dummy PLY attrs)
         public Quaternion rot_raw_val;
+        // FreeTimeGS (.ftgs.ply) : temps normalise, log de la duree de vie, vitesse, fenetre de sequence
+        public float ftgs_time;
+        public float ftgs_log_duration;
+        public Vector3 ftgs_velocity;
+        public float ftgs_seg_start, ftgs_seg_end;
+    }
+
+    // Variante temporelle d'un fichier d'entree, d'apres ses proprietes PLY
+    public enum TemporalKind
+    {
+        None,       // 3DGS statique
+        FourC4D,    // 4C4D / 4DGS : t, scale_t, rot_r_*
+        FreeTimeGS  // FreeTimeGS v1 : time, log_duration, velocity_* (+ seg_start/seg_end ITHACA)
+    }
+
+    // Informations FreeTimeGS lues dans l'en-tete (lignes comment)
+    public struct FtgsHeaderInfo
+    {
+        public int nFrames;          // nombre de frames couvertes par le temps normalise [0,1]
+        public float minDuration;    // duree de vie minimale (temps normalise)
+        public bool useVelocity;
+        public bool hasWindow;       // proprietes seg_start/seg_end presentes (assemble_ftgs.py)
+        public int firstFrame;       // ithaca_first_frame
+        public int segments;         // ithaca_segments
     }
 
     [BurstCompile]
@@ -48,13 +72,32 @@ namespace GaussianSplatting4D.Editor.Utils
             return vertexCount;
         }
 
-        public static unsafe void ReadFile(string filePath, out NativeArray<InputSplatData> splats)
+        // Type temporel d'apres l'en-tete seul (affichage dans la fenetre de creation d'asset)
+        public static TemporalKind ReadTemporalKind(string filePath)
         {
+            if (!File.Exists(filePath) || !isPLY(filePath))
+                return TemporalKind.None;
+            PLYFileReader.ReadFileHeader(filePath, out _, out _, out var attrs);
+            return DetectTemporalKind(attrs);
+        }
+
+        public static void ReadFile(string filePath, out NativeArray<InputSplatData> splats)
+        {
+            ReadFile(filePath, out splats, out _, out _);
+        }
+
+        public static unsafe void ReadFile(string filePath, out NativeArray<InputSplatData> splats, out TemporalKind temporalKind, out FtgsHeaderInfo ftgsInfo)
+        {
+            temporalKind = TemporalKind.None;
+            ftgsInfo = default;
             if (isPLY(filePath))
             {
                 NativeArray<byte> plyRawData;
                 List<(string, PLYFileReader.ElementType)> attributes;
-                PLYFileReader.ReadFile(filePath, out var splatCount, out var vertexStride, out attributes, out plyRawData);
+                PLYFileReader.ReadFile(filePath, out var splatCount, out var vertexStride, out attributes, out var comments, out plyRawData);
+                temporalKind = DetectTemporalKind(attributes);
+                if (temporalKind == TemporalKind.FreeTimeGS)
+                    ftgsInfo = ParseFtgsHeader(filePath, comments, attributes);
                 string attrError = CheckPLYAttributes(attributes);
                 if (!string.IsNullOrEmpty(attrError))
                     throw new IOException($"PLY file is probably not a Gaussian Splat file? Missing properties: {attrError}");
@@ -73,6 +116,35 @@ namespace GaussianSplatting4D.Editor.Utils
 
         static bool isPLY(string filePath) => filePath.EndsWith(".ply", true, CultureInfo.InvariantCulture);
         static bool isSPZ(string filePath) => filePath.EndsWith(".spz", true, CultureInfo.InvariantCulture);
+
+        static bool HasFloat(List<(string, PLYFileReader.ElementType)> attributes, string name) =>
+            attributes.Contains((name, PLYFileReader.ElementType.Float));
+
+        static TemporalKind DetectTemporalKind(List<(string, PLYFileReader.ElementType)> attributes)
+        {
+            if (HasFloat(attributes, "time") && HasFloat(attributes, "log_duration") && HasFloat(attributes, "velocity_0"))
+                return TemporalKind.FreeTimeGS;
+            if (HasFloat(attributes, "t") && HasFloat(attributes, "scale_t"))
+                return TemporalKind.FourC4D;
+            return TemporalKind.None;
+        }
+
+        static FtgsHeaderInfo ParseFtgsHeader(string filePath, Dictionary<string, string> comments, List<(string, PLYFileReader.ElementType)> attributes)
+        {
+            string Get(string key, string def) => comments.TryGetValue(key, out var v) ? v : def;
+            if (Get("time_units", "normalized") != "normalized")
+                throw new IOException($"PLY {filePath} : FreeTimeGS en temps '{Get("time_units", "")}' non pris en charge (temps normalise attendu)");
+            var inv = CultureInfo.InvariantCulture;
+            return new FtgsHeaderInfo
+            {
+                nFrames = int.Parse(Get("n_frames", "2"), inv),
+                minDuration = float.Parse(Get("min_duration", "0"), inv),
+                useVelocity = Get("use_velocity", "1") != "0",
+                hasWindow = HasFloat(attributes, "seg_start") && HasFloat(attributes, "seg_end"),
+                firstFrame = int.Parse(Get("ithaca_first_frame", "0"), inv),
+                segments = int.Parse(Get("ithaca_segments", "1"), inv),
+            };
+        }
 
         static string CheckPLYAttributes(List<(string, PLYFileReader.ElementType)> attributes)
         {
@@ -165,13 +237,28 @@ namespace GaussianSplatting4D.Editor.Utils
                 "rot_r_2",
                 "rot_r_3"
             ,
-                "rot_0", "rot_1", "rot_2", "rot_3"
+                "rot_0", "rot_1", "rot_2", "rot_3",
+                "time", "log_duration", "velocity_0", "velocity_1", "velocity_2", "seg_start", "seg_end"
             };
+            // Couleurs de degre < 3 (ex. FreeTimeGS assemble en degre 1 : f_rest_0..8) : le fichier range
+            // les coefficients canal par canal (k par canal) ; on les replace aux emplacements du degre 3
+            // (15 par canal) attendus par ReorderSHs, les coefficients absents restent a zero.
+            int restCount = 0;
+            while (HasFloat(attributes, $"f_rest_{restCount}"))
+                ++restCount;
+            int restPerChannel = restCount / 3;
+            const int kRestStart = 9, kRestPerChannel = 15;
             Assert.AreEqual(UnsafeUtility.SizeOf<InputSplatData>() / 4, splatAttributes.Length);
             NativeArray<int> srcOffsets = new NativeArray<int>(splatAttributes.Length, Allocator.Temp);
             for (int ai = 0; ai < splatAttributes.Length; ai++)
             {
-                int attrIndex = attributes.IndexOf((splatAttributes[ai], PLYFileReader.ElementType.Float));
+                string attrName = splatAttributes[ai];
+                if (restPerChannel != kRestPerChannel && ai >= kRestStart && ai < kRestStart + 3 * kRestPerChannel)
+                {
+                    int c = (ai - kRestStart) / kRestPerChannel, j = (ai - kRestStart) % kRestPerChannel;
+                    attrName = j < restPerChannel ? $"f_rest_{c * restPerChannel + j}" : null;
+                }
+                int attrIndex = attrName != null ? attributes.IndexOf((attrName, PLYFileReader.ElementType.Float)) : -1;
                 int attrOffset = attrIndex >= 0 ? fileAttrOffsets[attrIndex] : -1;
                 srcOffsets[ai] = attrOffset;
             }

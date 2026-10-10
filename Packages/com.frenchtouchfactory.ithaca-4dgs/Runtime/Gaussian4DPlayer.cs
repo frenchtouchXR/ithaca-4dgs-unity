@@ -12,6 +12,9 @@ using UnityEditor;
 
 namespace GaussianSplatting4D.Runtime
 {
+    // 4C4D : temps du modele en unites 4C4D (duration = t_max de l'entrainement).
+    // FreeTimeGS : temps normalise [0,1] sur toute la prise ; duration et numFrames sont alors
+    // pris dans l'asset (1 et nombre de frames), la vitesse de lecture reste reglee par fps.
     [ExecuteInEditMode]
     [RequireComponent(typeof(Gaussian4DSplatRenderer))]
     public class Gaussian4DPlayer : MonoBehaviour
@@ -42,7 +45,20 @@ namespace GaussianSplatting4D.Runtime
 
         Gaussian4DSplatRenderer m_Renderer;
 
-        void Awake() { m_Renderer = GetComponent<Gaussian4DSplatRenderer>(); AutoPopulateTemporalDataAsset(); UploadTemporalData(); }
+        void Awake() { m_Renderer = GetComponent<Gaussian4DSplatRenderer>(); AutoPopulateTemporalDataAsset(); ApplyAssetTiming(); UploadTemporalData(); }
+
+        // FreeTimeGS : temps normalise -> duree 1, nombre de frames de l'asset
+        void ApplyAssetTiming()
+        {
+            var asset = m_Renderer != null ? m_Renderer.m_Asset : null;
+            if (asset == null || asset.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS)
+                return;
+            duration = 1f;
+            if (asset.temporalFrames > 1)
+                numFrames = asset.temporalFrames;
+        }
+
+        int TemporalStride => m_Renderer != null && m_Renderer.m_Asset != null ? m_Renderer.m_Asset.temporalStride : GaussianSplatAsset.kTemporalStride4C4D;
 
         void OnEnable()
         {
@@ -113,9 +129,10 @@ namespace GaussianSplatting4D.Runtime
 
         void OnValidate()
         {
-            previewTime = Mathf.Clamp(previewTime, 0f, duration);
             if (m_Renderer == null) m_Renderer = GetComponent<Gaussian4DSplatRenderer>();
             if (m_Renderer == null) return;
+            ApplyAssetTiming();
+            previewTime = Mathf.Clamp(previewTime, 0f, duration);
             m_Renderer.m_TemporalCurrentTime = previewTime;
             AutoPopulateTemporalDataAsset();
             if (m_GpuTemporalData == null && temporalDataAsset != null)
@@ -214,8 +231,9 @@ namespace GaussianSplatting4D.Runtime
             uint[] uintData = new uint[bytes.Length / 4];
             Buffer.BlockCopy(bytes, 0, uintData, 0, bytes.Length);
             m_GpuTemporalData.SetData(uintData);
-            int nSplats = bytes.Length / 52;
-            Debug.Log($"[Gaussian4DPlayer] {nSplats} splats");
+            int nSplats = bytes.Length / TemporalStride;
+            bool ftgs = m_Renderer != null && m_Renderer.m_Asset != null && m_Renderer.m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS;
+            Debug.Log($"[Gaussian4DPlayer] {nSplats} splats ({(ftgs ? "FreeTimeGS" : "4C4D")})");
             m_Renderer.m_GpuTemporalDummy = m_GpuTemporalData;
         }
 
