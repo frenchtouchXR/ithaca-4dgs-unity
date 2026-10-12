@@ -23,6 +23,9 @@ Once installed, import the **Demo Scene** sample from this package's page in Pac
 The "Demo Scene" sample needs Gaussian Splat assets that are not bundled with the package —
 download them here:
 [Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
+The archive includes `Coucou40Deg_HD.ply`, a **FreeTimeGS** take (higher quality, replacing the
+previous Coucou40deg example): create its asset like any other PLY (it is detected as
+4D FreeTimeGS), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4DPlayer`.
 
 ## Requirements
 

@@ -70,6 +70,9 @@ between a 3D environment and a 4D actor will be incorrect.
 The sample scene included in this repository references Gaussian Splat assets that are too
 large to store in Git. Download them here:
 [Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
+The archive includes `Coucou40Deg_HD.ply`, a **FreeTimeGS** take (higher quality, replacing the
+previous Coucou40deg example): create its asset like any other PLY (it is detected as
+4D FreeTimeGS), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4DPlayer`.
 
 Extract the archive's PLY files into `Assets/GS_scenes/` at the root of the project (create
 the folder if needed), then generate the corresponding GaussianSplat assets yourself using
