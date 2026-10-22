@@ -64,6 +64,8 @@ namespace GaussianSplatting4D.Editor.Utils
             int vertexCount = 0;
             if (File.Exists(filePath))
             {
+                if (FtgszFileReader.IsFtgsz(filePath))
+                    filePath = FtgszFileReader.ResolveToPly(filePath);   // .ftgsz ITHACA : PLY decode (cache)
                 if (isPLY(filePath))
                     PLYFileReader.ReadFileHeader(filePath, out vertexCount, out _, out _);
                 else if (isSPZ(filePath))
@@ -75,6 +77,8 @@ namespace GaussianSplatting4D.Editor.Utils
         // Type temporel d'apres l'en-tete seul (affichage dans la fenetre de creation d'asset)
         public static TemporalKind ReadTemporalKind(string filePath)
         {
+            if (File.Exists(filePath) && FtgszFileReader.IsFtgsz(filePath))
+                filePath = FtgszFileReader.ResolveToPly(filePath);
             if (!File.Exists(filePath) || !isPLY(filePath))
                 return TemporalKind.None;
             PLYFileReader.ReadFileHeader(filePath, out _, out _, out var attrs);
@@ -90,6 +94,8 @@ namespace GaussianSplatting4D.Editor.Utils
         {
             temporalKind = TemporalKind.None;
             ftgsInfo = default;
+            if (FtgszFileReader.IsFtgsz(filePath))
+                filePath = FtgszFileReader.ResolveToPly(filePath);       // FreeTimeGS ou 4C4D compresse
             if (isPLY(filePath))
             {
                 NativeArray<byte> plyRawData;

@@ -87,7 +87,7 @@ namespace GaussianSplatting4D.Editor
             EditorGUILayout.Space();
             GUILayout.Label("Input data", EditorStyles.boldLabel);
             var rect = EditorGUILayout.GetControlRect(true);
-            m_InputFile = m_FilePicker.PathFieldGUI(rect, new GUIContent("Input PLY/SPZ File"), m_InputFile, "ply,spz", "PointCloudFile");
+            m_InputFile = m_FilePicker.PathFieldGUI(rect, new GUIContent("Input PLY/SPZ/FTGSZ File"), m_InputFile, "ply,spz,ftgsz", "PointCloudFile");
             m_ImportCameras = EditorGUILayout.Toggle("Import Cameras", m_ImportCameras);
 
             if (m_InputFile != m_PrevFilePath && !string.IsNullOrWhiteSpace(m_InputFile))
@@ -263,7 +263,7 @@ namespace GaussianSplatting4D.Editor
             m_ErrorMessage = null;
             if (string.IsNullOrWhiteSpace(m_InputFile))
             {
-                m_ErrorMessage = $"Select input PLY/SPZ file";
+                m_ErrorMessage = $"Select input PLY/SPZ/FTGSZ file";
                 return;
             }
 

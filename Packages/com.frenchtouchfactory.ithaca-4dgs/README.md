@@ -3,8 +3,9 @@
 Real-time 4D Gaussian Splatting rendering and asset generation for Unity (URP), with full
 3DGS/4DGS compatibility. A fork of
 [aras-p/UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting), extended
-with temporal playback support for 4C4D / 4DGS PLY files (`t`, `scale_t`, `rot_r_*`) and
-FreeTimeGS files (`.ftgs.ply`), detected automatically on import.
+with temporal playback support for 4D PLY files — 4D rotation models (`t`, `scale_t`, `rot_r_*`)
+and velocity models (`time`, `log_duration`, `velocity_*`), detected automatically on import —
+and for the compact **`.ftgsz`** compressed 4D format (about a quarter of the PLY size).
 
 See the [full project README](https://github.com/frenchtouchXR/ithaca-4dgs-unity#readme) for
 setup instructions, screenshots, and usage details.
@@ -23,9 +24,9 @@ Once installed, import the **Demo Scene** sample from this package's page in Pac
 The "Demo Scene" sample needs Gaussian Splat assets that are not bundled with the package —
 download them here:
 [Demo assets (Google Drive)](https://drive.google.com/file/d/1DrsaGNzCFkl63uh62_RSAf4FhUCFAp24/view?usp=sharing).
-The archive includes `Coucou40Deg_HD.ply`, a **FreeTimeGS** take (higher quality, replacing the
-previous Coucou40deg example): create its asset like any other PLY (it is detected as
-4D FreeTimeGS), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4DPlayer`.
+The archive includes `Coucou40Deg_HD.ply`, a higher-quality 4D take (replacing the previous
+Coucou40deg example): create its asset like any other PLY (its temporal type is detected
+automatically), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4DPlayer`.
 
 ## Requirements
 
@@ -47,15 +48,17 @@ previous Coucou40deg example): create its asset like any other PLY (it is detect
 - `Runtime/GaussianSplatRenderer.cs`, `GaussianSplatURPFeature.cs` — unmodified 3D path from
   aras-p, for static environments alongside 4D actors
 - `Editor/GaussianSplatAssetCreator.cs` — asset creation menu
-  (`Tools > Gaussian Splats > Create GaussianSplatAsset`), extended to read 4C4D and FreeTimeGS
-  temporal PLY attributes and emit a companion `*_tmp.bytes` file; the detected type
-  (3DGS / 4D 4C4D / 4D FreeTimeGS) is shown in the window, and every quality preset applies
-- `Shaders/Splat4DUtilities.compute` — temporal evaluation (4C4D conditional covariance, or
-  FreeTimeGS velocity, temporal opacity and sequence window)
+  (`Tools > Gaussian Splats > Create GaussianSplatAsset`), extended to read temporal PLY
+  attributes and emit a companion `*_tmp.bytes` file; accepts `.ply`, `.spz` and `.ftgsz`; the
+  detected type (3DGS or 4D) is shown in the window, and every quality preset applies
+- `Editor/Utils/FtgszFileReader.cs` — `.ftgsz` reader (ITHACA compressed 4D format v2): decoded
+  once into an equivalent PLY, cached in `Library/Ftgsz/`, then imported like any PLY
+- `Shaders/Splat4DUtilities.compute` — temporal evaluation (4D rotation conditional covariance, or
+  velocity, temporal opacity and sequence window)
 
 `Gaussian4DSplatRenderer` has an `sRGB Blending` option (on by default, per object) that
 composites the splats in sRGB like the training renders and the ITHACA browser player; turn it
-off for the original aras-p linear compositing. With a FreeTimeGS asset, `Gaussian4DPlayer` sets
+off for the original aras-p linear compositing. With a velocity-model asset, `Gaussian4DPlayer` sets
 `Duration` to 1 (normalized time) and `Num Frames` to the asset's frame count.
 
 ## License
