@@ -306,7 +306,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         float f_dt = _SplatCurrentTime - f_time;
         delta_mean = f_vel * f_dt;
         float f_x = f_dt / max(f_dur, 1e-6);
-        marginal_t = (_SplatCurrentTime < f_w0 || _SplatCurrentTime > f_w1) ? 0.0 : exp(-0.5 * f_x * f_x);
+        marginal_t = (_SplatCurrentTime < f_w0 || _SplatCurrentTime >= f_w1) ? 0.0 : exp(-0.5 * f_x * f_x);
         float3x3 rsm = CalcMatrixFromRotationScale(splat.rot, splat.scale);
         CalcCovariance3D(rsm, cov3d0_4d, cov3d1_4d);
         scale_lin = splat.scale;

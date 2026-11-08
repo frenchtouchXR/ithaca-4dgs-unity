@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- FreeTimeGS sequence window: frame f is shown up to f + 1 excluded (ITHACA rule of 23/10/2026, same as the
+  browser player and `render_freetimegs.py`). The window is now [first frame − 1 % of a frame, last frame +
+  0.99 frame[ instead of half a frame on each side, and the shader test excludes the end (`>=`), so two
+  assembled sequences no longer overlap nor leave a gap at their junction.
 - Quest 3 (single-pass stereo): the model was cut in one eye; the splats now use their own depth buffer,
   cleared per eye. Splats are drawn with explicit per-view matrices and image size (`EyeView.screenSize`) and
   flipped at composite time when the camera draws straight into the final image (URP global matrices were

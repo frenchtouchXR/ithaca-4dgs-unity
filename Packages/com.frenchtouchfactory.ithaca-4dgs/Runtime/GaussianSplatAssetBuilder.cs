@@ -702,21 +702,23 @@ namespace GaussianSplatting4D.Runtime
         // (_TemporalMode = 1). Position et covariance spatiale sont celles du 3DGS (donnees compressees de l'asset) ;
         // seuls le deplacement et l'opacite temporelle viennent d'ici :
         //   position(t) = position + vitesse * (t - time)
-        //   opacite(t)  = opacite * exp(-0.5 * ((t - time) / duree)^2), nulle hors [win_start, win_end]
+        //   opacite(t)  = opacite * exp(-0.5 * ((t - time) / duree)^2), nulle hors [win_start, win_end[
         [StructLayout(LayoutKind.Sequential)]
         public struct SplatTemporalDataFTGS
         {
             public float time;                          // temps central normalise [0,1]
             public float duration;                      // max(exp(log_duration), min_duration)
             public float vel_x, vel_y, vel_z;           // deplacement par unite de temps normalise
-            public float win_start, win_end;            // fenetre de sequence elargie d'une demi-frame
+            public float win_start, win_end;            // fenetre de sequence : [premiere frame, derniere frame + 1[
             public float reserved;
         }
 
         public static void CreateTemporalDataFTGS(NativeArray<InputSplatData> inputSplats, Stream output, ref Hash128 dataHash, FtgsHeaderInfo info)
         {
             int count = inputSplats.Length;
-            float half = 0.5f / math.max(info.nFrames - 1, 1);   // meme marge que le lecteur navigateur et render_freetimegs.py
+            // la frame f tient jusqu'a f + 1 exclue (regle ITHACA du 23/10/2026, meme regle que le lecteur navigateur
+            // et render_freetimegs.py) ; marge de 1 % de frame pour les arrondis des bornes enregistrees
+            float frame = 1f / math.max(info.nFrames - 1, 1);
             NativeArray<SplatTemporalDataFTGS> data = new NativeArray<SplatTemporalDataFTGS>(count, TempAllocator);
             for (int i = 0; i < count; i++)
             {
@@ -727,8 +729,8 @@ namespace GaussianSplatting4D.Runtime
                     time = s.ftgs_time,
                     duration = math.max(math.exp(s.ftgs_log_duration), math.max(info.minDuration, 1e-6f)),
                     vel_x = v.x, vel_y = v.y, vel_z = v.z,
-                    win_start = info.hasWindow ? s.ftgs_seg_start - half : -1e30f,
-                    win_end = info.hasWindow ? s.ftgs_seg_end + half : 1e30f,
+                    win_start = info.hasWindow ? s.ftgs_seg_start - 0.01f * frame : -1e30f,
+                    win_end = info.hasWindow ? s.ftgs_seg_end + 0.99f * frame : 1e30f,
                 };
             }
             EmitSimpleData(data, output, ref dataHash);
