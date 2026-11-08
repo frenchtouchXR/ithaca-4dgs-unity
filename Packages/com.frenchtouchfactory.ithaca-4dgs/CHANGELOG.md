@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- XR Single Pass Instanced / multiview (Meta Quest 3): the 4D URP pass sorts the splats once from the camera,
+  then for each eye computes the view data with that eye's view and projection matrices (`EyeView`,
+  `_MatrixVPEye` / `_MatrixPEye` in `Splat4DUtilities.compute`) and draws and composites them into the eye's
+  slice of the camera target. Previously nothing was drawn in this mode; Multi-pass still works, and
+  non-XR rendering is unchanged.
 - FreeTimeGS support (`.ftgs.ply`, FreeTimeGsVanilla format v1, as produced and assembled by the
   ITHACA pipeline): automatic detection on import, `*_tmp.bytes` in a dedicated 32-byte layout
   (time, duration, velocity, sequence window), `GaussianSplatAsset.temporalFormat` /

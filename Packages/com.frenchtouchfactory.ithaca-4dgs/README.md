@@ -68,10 +68,13 @@ Scenes with `Gaussian4DPlayer` build as standalone players like any other scene.
 next to the splat asset) when the field was left empty, since the editor lookup is not available at
 runtime; a warning lists any player for which no file was found. Use Vulkan on Android.
 
-On Meta Quest 3 (OpenXR, Vulkan), 4D sequences render with the stereo rendering mode set to Multi-pass
-(`Project Settings > XR Plug-in Management > OpenXR > Android > Render Mode`): the renderer computes one
-view per pass and does not support Single Pass Instanced yet. With the new Input System, the camera's
-`TrackedPoseDriver` needs bindings to `<XRHMD>/centerEyePosition` and `<XRHMD>/centerEyeRotation`.
+On Meta Quest 3 (OpenXR, Vulkan), 4D sequences render in both stereo modes of
+`Project Settings > XR Plug-in Management > OpenXR > Android > Render Mode`. With Single Pass Instanced
+(multiview, recommended), the 4D pass sorts the splats once from the camera, then computes the view data and
+draws them for each eye with that eye's matrices, compositing into the eye's slice of the camera target; the
+rest of the scene is rendered once for both eyes. Hello ITHACA (197,625 splats) runs at about 59 fps on a
+Quest 3 this way. With the new Input System, the camera's `TrackedPoseDriver` needs bindings to
+`<XRHMD>/centerEyePosition` and `<XRHMD>/centerEyeRotation`.
 
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.

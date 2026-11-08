@@ -40,6 +40,10 @@
 float4x4 _MatrixObjectToWorld;
 float4x4 _MatrixWorldToObject;
 float4x4 _MatrixMV;
+// Casque, deux yeux en une passe : matrices de l'oeil dessine (_UseEyeMatrices = 1) a la place de celles de la camera
+float4x4 _MatrixVPEye;
+float4x4 _MatrixPEye;
+float _UseEyeMatrices;
 float4 _VecScreenParams;
 float4 _VecWorldSpaceCameraPos;
 int _SelectionMode;
@@ -349,7 +353,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     splat.opacity *= (half)marginal_t;
     
     float3 centerWorldPos = mul(_MatrixObjectToWorld, float4(splat.pos,1)).xyz;
-    float4 centerClipPos = mul(UNITY_MATRIX_VP, float4(centerWorldPos, 1));
+    float4 centerClipPos = mul(_UseEyeMatrices > 0.5 ? _MatrixVPEye : UNITY_MATRIX_VP, float4(centerWorldPos, 1));
     // Filtre taille intrinseque (axe lineaire, meme unite que le PLY)
     if (_MaxSplatSize > 0)
     {
@@ -403,7 +407,7 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         float splatScale2 = splatScale * splatScale;
         cov3d0 *= splatScale2;
         cov3d1 *= splatScale2;
-        float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams);
+        float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, _UseEyeMatrices > 0.5 ? _MatrixPEye : UNITY_MATRIX_P, _VecScreenParams);
         
         DecomposeCovariance(cov2d, view.axis1, view.axis2);
 

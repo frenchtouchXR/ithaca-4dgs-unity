@@ -14,6 +14,14 @@ using UnityEngine.XR;
 
 namespace GaussianSplatting4D.Runtime
 {
+    // Un oeil du casque (deux yeux en une passe) : matrice de vue, projection GPU (GL.GetGPUProjectionMatrix) et position
+    public struct EyeView
+    {
+        public Matrix4x4 view;
+        public Matrix4x4 gpuProjection;
+        public Vector3 position;
+    }
+
     class Gaussian4DSplatRenderSystem
     {
         // ReSharper disable MemberCanBePrivate.Global - used by HDRP/URP features that are not always compiled
@@ -139,6 +147,30 @@ namespace GaussianSplatting4D.Runtime
         {
             Material matComposite = null;
             for (int i = start; i < end; ++i)
+                matComposite = RenderSplatObject(i, cam, cmb, true, true, null) ?? matComposite;
+            return matComposite;
+        }
+
+        // Casque, deux yeux en une passe : tri unique des objets [start, end) depuis la camera (entre les deux yeux,
+        // l'ordre de profondeur est le meme a l'echelle des gaussiennes), avant les dessins par oeil (DrawSplatsForEye)
+        public Material SortSplats(Camera cam, CommandBuffer cmb, int start, int end)
+        {
+            Material matComposite = null;
+            for (int i = start; i < end; ++i)
+                matComposite = RenderSplatObject(i, cam, cmb, true, false, null) ?? matComposite;
+            return matComposite;
+        }
+
+        // Calcul de vue avec les matrices de l'oeil puis dessin, dans la cible en place (la tranche de cet oeil)
+        public void DrawSplatsForEye(Camera cam, CommandBuffer cmb, int start, int end, EyeView eye)
+        {
+            for (int i = start; i < end; ++i)
+                RenderSplatObject(i, cam, cmb, false, true, eye);
+        }
+
+        Material RenderSplatObject(int i, Camera cam, CommandBuffer cmb, bool sort, bool draw, EyeView? eye)
+        {
+            Material matComposite = null;
             {
                 var kvp = m_ActiveSplats[i];
                 var gs = kvp.Item1;
@@ -152,10 +184,14 @@ namespace GaussianSplatting4D.Runtime
 
                 // sort
                 var matrix = gs.transform.localToWorldMatrix;
-                if (gs.m_FrameCounter % gs.m_SortNthFrame == 0)
-                    gs.SortPoints(cmb, cam, matrix);
-                ++gs.m_FrameCounter;
-
+                if (sort)
+                {
+                    if (gs.m_FrameCounter % gs.m_SortNthFrame == 0)
+                        gs.SortPoints(cmb, cam, matrix);
+                    ++gs.m_FrameCounter;
+                }
+                if (!draw)
+                    return matComposite;
                 // cache view
                 kvp.Item2.Clear();
                 Material displayMat = gs.m_RenderMode switch
@@ -167,7 +203,7 @@ namespace GaussianSplatting4D.Runtime
                     _ => gs.m_MatSplats
                 };
                 if (displayMat == null)
-                    continue;
+                    return matComposite;
 
                 gs.SetAssetDataOnMaterial(mpb);
                 mpb.SetBuffer(Gaussian4DSplatRenderer.Props.SplatChunks, gs.m_GpuChunks);
@@ -184,7 +220,7 @@ namespace GaussianSplatting4D.Runtime
                 mpb.SetInteger(Gaussian4DSplatRenderer.Props.DisplayChunks, gs.m_RenderMode == Gaussian4DSplatRenderer.RenderMode.DebugChunkBounds ? 1 : 0);
 
                 cmb.BeginSample(s_ProfCalcView);
-                gs.CalcViewData(cmb, cam);
+                gs.CalcViewData(cmb, cam, eye);
                 cmb.EndSample(s_ProfCalcView);
 
                 // draw
@@ -382,6 +418,9 @@ namespace GaussianSplatting4D.Runtime
             public static readonly int DstBuffer = Shader.PropertyToID("_DstBuffer");
             public static readonly int BufferSize = Shader.PropertyToID("_BufferSize");
             public static readonly int MatrixMV = Shader.PropertyToID("_MatrixMV");
+            public static readonly int MatrixVPEye = Shader.PropertyToID("_MatrixVPEye");
+            public static readonly int MatrixPEye = Shader.PropertyToID("_MatrixPEye");
+            public static readonly int UseEyeMatrices = Shader.PropertyToID("_UseEyeMatrices");
             public static readonly int MatrixObjectToWorld = Shader.PropertyToID("_MatrixObjectToWorld");
             public static readonly int MatrixWorldToObject = Shader.PropertyToID("_MatrixWorldToObject");
             public static readonly int VecScreenParams = Shader.PropertyToID("_VecScreenParams");
@@ -711,23 +750,33 @@ namespace GaussianSplatting4D.Runtime
             DestroyImmediate(m_MatDebugBoxes);
         }
 
-        internal void CalcViewData(CommandBuffer cmb, Camera cam)
+        internal void CalcViewData(CommandBuffer cmb, Camera cam) => CalcViewData(cmb, cam, null);
+
+        // eye : matrices d'un oeil du casque (deux yeux en une passe) ; null = celles de la camera
+        internal void CalcViewData(CommandBuffer cmb, Camera cam, EyeView? eye)
         {
             if (cam.cameraType == CameraType.Preview)
                 return;
 
             var tr = transform;
 
-            Matrix4x4 matView = cam.worldToCameraMatrix;
+            Matrix4x4 matView = eye?.view ?? cam.worldToCameraMatrix;
             Matrix4x4 matO2W = tr.localToWorldMatrix;
             Matrix4x4 matW2O = tr.worldToLocalMatrix;
             int screenW = cam.pixelWidth, screenH = cam.pixelHeight;
             int eyeW = XRSettings.eyeTextureWidth, eyeH = XRSettings.eyeTextureHeight;
             Vector4 screenPar = new Vector4(eyeW != 0 ? eyeW : screenW, eyeH != 0 ? eyeH : screenH, 0, 0);
-            Vector4 camPos = cam.transform.position;
+            Vector4 camPos = eye?.position ?? cam.transform.position;
 
             // calculate view dependent data for each splat
             SetAssetDataOnCS(cmb, KernelIndices.CalcViewData);
+
+            cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.UseEyeMatrices, eye.HasValue ? 1f : 0f);
+            if (eye.HasValue)
+            {
+                cmb.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixVPEye, eye.Value.gpuProjection * eye.Value.view);
+                cmb.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixPEye, eye.Value.gpuProjection);
+            }
 
             cmb.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixMV, matView * matO2W);
             cmb.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixObjectToWorld, matO2W);
