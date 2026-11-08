@@ -114,9 +114,16 @@ platform provides an Ogg Vorbis copy of every track (`sons_ogg`).
 
 Set `template` to a disabled scene object with `Gaussian4DSplatRenderer` and `Gaussian4DPlayer` already set up
 (shaders, blending); it is cloned into the two slots. The render's `cadrage` (position, rotation `Rz Ry Rx`,
-scale, around the robust center of the first sequence) is applied as on the platform's viewer; turn the
-player's object by 180° around X (Y down in ITHACA takes, Y up in Unity), and with `feetOnFloor` the model
-stands on the object's height. Downloaded files are deleted when the render is closed, unless
+scale, around the robust center of the first sequence) is applied as on the platform's viewer, with its box:
+`interieur` keeps only the splats inside it, `exterieur` only those outside (a `GaussianCutout` box, in the
+scene axes, which does not follow the cadrage's scale, as on the platform). Turn the player's object by 180°
+around X (Y down in ITHACA takes, Y up in Unity). With `feetOnFloor` the model stands on the object's height,
+and with `centerOnOrigin` it is centered (horizontally) on the object, so that scaling or turning the object
+(e.g. with the controllers) keeps the feet in place; the box moves with it. When the box keeps its inside,
+the feet are taken inside the box.
+
+The share JSON of the platform also gives `sons_ogg`, Ogg Vorbis copies of the tracks that Unity reads on
+Android: they are used when present. `Open(json)` ignores a UTF-8 byte order mark in front of the JSON. Downloaded files are deleted when the render is closed, unless
 `keepDownloads` is set. Some sites refuse Unity's default user agent: `userAgent` is sent with every request.
 On a Quest 3, the Thriller Cat (14 sequences of about 200,000 splats, 2 s each) plays with its sound in sync,
 each sequence being prepared in 0.5 s.

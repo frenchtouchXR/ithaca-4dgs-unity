@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platform), with sound leading the playback, the render's `cadrage`, feet on the floor, and the downloaded
   files deleted on close.
 - `Gaussian4DPlayer.SetTemporalData`: changes the temporal data of a player while the application runs.
+- `Gaussian4DSequencePlayer`: the cadrage's box (`interieur` / `exterieur`, as a `GaussianCutout` box following
+  the player's object), `centerOnOrigin` (model centered on the object, so that it turns and scales around its
+  feet), `sons_ogg` tracks preferred when present, UTF-8 byte order mark ignored in front of the JSON.
 
 ### Changed
 - The asset data creation moved from the editor creator to `Runtime/GaussianSplatAssetBuilder.cs`, and the
