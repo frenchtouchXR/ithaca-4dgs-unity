@@ -64,6 +64,7 @@ namespace GaussianSplatting4D.Runtime
             public float decalage_son;   // secondes de son avant la premiere image du rendu
             public SequenceInfo[] sequences;
             public Cadrage cadrage;
+            [NonSerialized] public Trajectoire trajectoire;
         }
 
         public enum State { Idle, Loading, Playing, Waiting, Error }
@@ -72,9 +73,9 @@ namespace GaussianSplatting4D.Runtime
         public Gaussian4DSplatRenderer template;
         public GaussianSplatRuntimeLoader.Quality quality = GaussianSplatRuntimeLoader.Quality.VeryHigh;
         public bool loop = true;
-        [Tooltip("Pieds du modele (bas de sa boite robuste, une fois cadre) a la hauteur de cet objet")]
+        [Tooltip("Sans cadrage : pieds du modele (bas de sa boite robuste) a la hauteur de cet objet. Avec un cadrage, le sol est le plan y = 0 de la scene cadree")]
         public bool feetOnFloor = true;
-        [Tooltip("Centre du modele (horizontalement) sur cet objet : rotation et taille autour de lui, comme l'anneau de l'AR du site")]
+        [Tooltip("Sans cadrage : centre du modele (horizontalement) sur cet objet. Avec un cadrage, c'est l'origine de la scene cadree")]
         public bool centerOnOrigin = true;
         [Tooltip("Agent des requetes http (celui de Unity est refuse par certains pare-feu de sites)")]
         public string userAgent = "ITHACA-4DGS-Unity/1.0";
@@ -88,6 +89,9 @@ namespace GaussianSplatting4D.Runtime
         public RenduInfo rendu { get; private set; }
         public float currentFrame { get; private set; }
         public float lastPrepareSeconds { get; private set; }
+        // demi-largeur horizontale du modele cadre (boite robuste, limitee a la boite du cadrage qui garde l'interieur),
+        // en unites de ce lecteur ; 0 tant que la premiere sequence n'est pas prete (ombre au sol, interface)
+        public float modelRadius { get; private set; }
         // son : pistes chargees, lecture, ecart entre la position du son et celle de l'image (s)
         public string audioStatus => m_Audio.Count == 0 ? "sans son" :
             $"{m_Audio.Count} piste(s) {(m_Audio.Exists(a => a && a.isPlaying) ? "en lecture" : "arretee(s)")}, " +
@@ -115,7 +119,58 @@ namespace GaussianSplatting4D.Runtime
         double m_PausedAt = -1;     // temps du rendu fige pendant une attente
         Coroutine m_Run;
 
-        public void Open(string json) => Open(JsonUtility.FromJson<RenduInfo>(json.TrimStart('\uFEFF')));
+        public void Open(string json)
+        {
+            json = json.TrimStart('\uFEFF');
+            var info = JsonUtility.FromJson<RenduInfo>(json);
+            info.trajectoire = Trajectoire.Lire(json);
+            Open(info);
+        }
+
+        // trajectoire des effets de scene de la plateforme (effets.trajectoire, comme lecteur4d.js) : deplacement rendu
+        // au personnage dans le repere du modele, avant le cadrage, interpole entre des images cles ; ex. chat maintenu
+        // au niveau du sol. Lue a part : JsonUtility ne lit pas les tableaux de tableaux.
+        public class Trajectoire
+        {
+            public Vector3 axe;
+            public float hauteur = 1, fps;
+            public List<Vector2> cles = new();
+
+            public static Trajectoire Lire(string json)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(json, "\"trajectoire\"\\s*:\\s*\\{(?<corps>.*?\"cles\"\\s*:\\s*\\[(?<cles>.*?)\\]\\s*\\].*?)\\}", System.Text.RegularExpressions.RegexOptions.Singleline);
+                if (!m.Success) return null;
+                var corps = m.Groups["corps"].Value;
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                float Nombre(string cle, float defaut)
+                {
+                    var n = System.Text.RegularExpressions.Regex.Match(corps, "\"" + cle + "\"\\s*:\\s*(-?[0-9.eE+-]+)");
+                    return n.Success ? float.Parse(n.Groups[1].Value, inv) : defaut;
+                }
+                var a = System.Text.RegularExpressions.Regex.Match(corps, "\"axe\"\\s*:\\s*\\[\\s*(-?[0-9.eE+-]+)\\s*,\\s*(-?[0-9.eE+-]+)\\s*,\\s*(-?[0-9.eE+-]+)\\s*\\]");
+                if (!a.Success) return null;
+                var t = new Trajectoire
+                {
+                    axe = new Vector3(float.Parse(a.Groups[1].Value, inv), float.Parse(a.Groups[2].Value, inv), float.Parse(a.Groups[3].Value, inv)).normalized,
+                    hauteur = Nombre("hauteur", 1),
+                    fps = Nombre("fps", 0),
+                };
+                foreach (System.Text.RegularExpressions.Match c in System.Text.RegularExpressions.Regex.Matches(m.Groups["cles"].Value + "]", "\\[\\s*(-?[0-9.eE+-]+)\\s*,\\s*(-?[0-9.eE+-]+)\\s*\\]"))
+                    t.cles.Add(new Vector2(float.Parse(c.Groups[1].Value, inv), float.Parse(c.Groups[2].Value, inv)));
+                t.cles.Sort((x, y) => x.x.CompareTo(y.x));
+                return t.cles.Count >= 2 ? t : null;
+            }
+
+            // deplacement (repere du modele) a l'instant s (secondes) du rendu
+            public Vector3 A(float s, float fpsRendu)
+            {
+                float f = s * (fps > 0 ? fps : fpsRendu), a = cles[cles.Count - 1].y;
+                if (f <= cles[0].x) a = cles[0].y;
+                else for (int k = 1; k < cles.Count; k++)
+                    if (f <= cles[k].x) { a = cles[k - 1].y + (cles[k].y - cles[k - 1].y) * (f - cles[k - 1].x) / Mathf.Max(1e-6f, cles[k].x - cles[k - 1].x); break; }
+                return axe * (a * hauteur);
+            }
+        }
 
         public void Open(RenduInfo info)
         {
@@ -136,6 +191,7 @@ namespace GaussianSplatting4D.Runtime
                 if (m_Slots[i] != null) { FreeSlot(m_Slots[i]); Destroy(m_Slots[i].go); m_Slots[i] = null; }
             if (m_Scene) Destroy(m_Scene.gameObject);
             m_Boite = null;
+            modelRadius = 0;
             if (!keepDownloads)
                 foreach (var f in m_Downloaded) TryDelete(f);
             m_Downloaded.Clear();
@@ -258,9 +314,11 @@ namespace GaussianSplatting4D.Runtime
 
                 // temps des modeles : temps normalise de la prise (image g a g / (total - 1)), comme le lecteur du site
                 float u = currentFrame / Mathf.Max(rendu.total - 1, 1);
+                Vector3 marche = rendu.trajectoire != null ? rendu.trajectoire.A((float)t, rendu.fps) : Vector3.zero;
                 foreach (var s in m_Slots)
                     if (s.go.activeSelf)
                     {
+                        s.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
                         s.player.previewTime = u;
                         // une sequence finie est retiree (sauf si c'est aussi la suivante, rendu a une sequence)
                         if (s.seq != cur && s.seq != next) Deactivate(s);
@@ -363,7 +421,6 @@ namespace GaussianSplatting4D.Runtime
             m_Cadre.localScale = Vector3.one * e;
             m_Cadre.localPosition = pivot + pos - e * (R * pivot);
             m_Scene.localPosition = Vector3.zero;
-            if (!feetOnFloor && !centerOnOrigin) return;
             // boite robuste du modele une fois cadre (repere de la scene), limitee a la boite qui garde l'interieur
             Vector3 smin = Vector3.positiveInfinity, smax = Vector3.negativeInfinity;
             for (int i = 0; i < 8; ++i)
@@ -377,6 +434,12 @@ namespace GaussianSplatting4D.Runtime
                 Vector3 bc = m_Boite.transform.localPosition, bd = m_Boite.transform.localScale;
                 smin = Vector3.Max(smin, bc - bd); smax = Vector3.Min(smax, bc + bd);
             }
+            modelRadius = 0.5f * Mathf.Max(smax.x - smin.x, smax.z - smin.z);
+            // rendu cadre sur la plateforme : le sol est le plan y = 0 de la scene cadree (le proprietaire y pose les pieds)
+            // et l'origine de la scene est le point de pose, comme dans la visionneuse et l'AR du site ; les pieds et le
+            // centre ne sont estimes depuis la boite robuste que pour un rendu sans cadrage
+            if (c != null) return;
+            if (!feetOnFloor && !centerOnOrigin) return;
             // dans le repere du parent de ce lecteur (sans son echelle) : bas de cette boite a la hauteur du lecteur, son
             // centre a l'aplomb du lecteur ; la scene est decalee d'autant
             Quaternion q = transform.localRotation;

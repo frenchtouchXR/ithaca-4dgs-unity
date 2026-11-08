@@ -8,7 +8,9 @@ Shader "Hidden/Gaussian Splatting/Composite"
             ZWrite Off
             ZTest Always
             Cull Off
-            Blend SrcAlpha OneMinusSrcAlpha
+            // couleur : melange habituel ; alpha : opacite cumulee (et non a²), pour un fond transparent (AR passthrough du
+            // Quest : le compositeur du casque se sert de l'alpha de l'image) ; sans effet sur un fond opaque
+            Blend SrcAlpha OneMinusSrcAlpha, One OneMinusSrcAlpha
 
 CGPROGRAM
 #pragma vertex vert

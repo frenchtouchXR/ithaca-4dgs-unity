@@ -37,6 +37,10 @@ namespace GaussianSplatting4D.Runtime
             finally { t_OnCurrentThread = before; }
         }
 
+        // allocations des etapes : TempJob avec le systeme de jobs (comme le createur) ; Persistent sur un fil
+        // d'arriere-plan, ou une preparation dure plus de 4 images (avertissement « JobTempAlloc » sinon), liberees de meme
+        static Allocator TempAllocator => t_OnCurrentThread ? Allocator.Persistent : Allocator.TempJob;
+
         public static void Run<T>(T job, int length, int batch) where T : struct, IJobParallelFor
         {
             if (!t_OnCurrentThread) { job.Schedule(length, batch).Complete(); return; }
@@ -126,12 +130,12 @@ namespace GaussianSplatting4D.Runtime
                 m_SplatData = splatData,
                 m_BoundsMin = boundsMin,
                 m_InvBoundsSize = 1.0f / (boundsMax - boundsMin),
-                m_Order = new NativeArray<(ulong, int)>(splatData.Length, Allocator.TempJob)
+                m_Order = new NativeArray<(ulong, int)>(splatData.Length, TempAllocator)
             };
             Run(order, splatData.Length, 4096);
             order.m_Order.Sort(new OrderComparer());
 
-            NativeArray<InputSplatData> copy = new(order.m_SplatData, Allocator.TempJob);
+            NativeArray<InputSplatData> copy = new(order.m_SplatData, TempAllocator);
             for (int i = 0; i < copy.Length; ++i)
                 order.m_SplatData[i] = copy[order.m_Order[i].Item2];
             copy.Dispose();
@@ -266,7 +270,7 @@ namespace GaussianSplatting4D.Runtime
             CalcChunkDataJob job = new CalcChunkDataJob
             {
                 splatData = splatData,
-                chunks = new(chunkCount, Allocator.TempJob),
+                chunks = new(chunkCount, TempAllocator),
             };
 
             Run(job, chunkCount, 8);
@@ -434,7 +438,7 @@ namespace GaussianSplatting4D.Runtime
         {
             int dataLen = inputSplats.Length * GaussianSplatAsset.GetVectorSize(m_FormatPos);
             dataLen = NextMultipleOf(dataLen, 8); // serialized as ulong
-            NativeArray<byte> data = new(dataLen, Allocator.TempJob);
+            NativeArray<byte> data = new(dataLen, TempAllocator);
 
             CreatePositionsDataJob job = new CreatePositionsDataJob
             {
@@ -460,7 +464,7 @@ namespace GaussianSplatting4D.Runtime
             int dataLen = inputSplats.Length * formatSize;
 
             dataLen = NextMultipleOf(dataLen, 8); // serialized as ulong
-            NativeArray<byte> data = new(dataLen, Allocator.TempJob);
+            NativeArray<byte> data = new(dataLen, TempAllocator);
 
             CreateOtherDataJob job = new CreateOtherDataJob
             {
@@ -506,7 +510,7 @@ namespace GaussianSplatting4D.Runtime
         public static void CreateColorData(NativeArray<InputSplatData> inputSplats, GaussianSplatAsset.ColorFormat m_FormatColor, Stream output, ref Hash128 dataHash, CompressTexture compressTexture = null)
         {
             var (width, height) = GaussianSplatAsset.CalcTextureSize(inputSplats.Length);
-            NativeArray<float4> data = new(width * height, Allocator.TempJob);
+            NativeArray<float4> data = new(width * height, TempAllocator);
 
             CreateColorDataJob job = new CreateColorDataJob();
             job.m_Input = inputSplats;
@@ -539,7 +543,7 @@ namespace GaussianSplatting4D.Runtime
                     height = height,
                     inputData = data,
                     format = m_FormatColor,
-                    outputData = new NativeArray<byte>(dstSize, Allocator.TempJob),
+                    outputData = new NativeArray<byte>(dstSize, TempAllocator),
                     formatBytesPerPixel = dstSize / width / height
                 };
                 Run(jobConvert, height, 1);
@@ -670,7 +674,7 @@ namespace GaussianSplatting4D.Runtime
             else
             {
                 int dataLen = (int)GaussianSplatAsset.CalcSHDataSize(inputSplats.Length, m_FormatSH);
-                NativeArray<byte> data = new(dataLen, Allocator.TempJob);
+                NativeArray<byte> data = new(dataLen, TempAllocator);
                 CreateSHDataJob job = new CreateSHDataJob
                 {
                     m_Input = inputSplats,
@@ -713,7 +717,7 @@ namespace GaussianSplatting4D.Runtime
         {
             int count = inputSplats.Length;
             float half = 0.5f / math.max(info.nFrames - 1, 1);   // meme marge que le lecteur navigateur et render_freetimegs.py
-            NativeArray<SplatTemporalDataFTGS> data = new NativeArray<SplatTemporalDataFTGS>(count, Allocator.TempJob);
+            NativeArray<SplatTemporalDataFTGS> data = new NativeArray<SplatTemporalDataFTGS>(count, TempAllocator);
             for (int i = 0; i < count; i++)
             {
                 var s = inputSplats[i];
@@ -734,7 +738,7 @@ namespace GaussianSplatting4D.Runtime
         public static void CreateTemporalData(NativeArray<InputSplatData> inputSplats, Stream output, ref Hash128 dataHash)
         {
             int count = inputSplats.Length;
-            NativeArray<SplatTemporalData> data = new NativeArray<SplatTemporalData>(count, Allocator.TempJob);
+            NativeArray<SplatTemporalData> data = new NativeArray<SplatTemporalData>(count, TempAllocator);
             for (int i = 0; i < count; i++)
             {
                 var s = inputSplats[i];

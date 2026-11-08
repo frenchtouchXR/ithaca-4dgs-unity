@@ -18,12 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Gaussian4DSequencePlayer`: the cadrage's box (`interieur` / `exterieur`, as a `GaussianCutout` box following
   the player's object), `centerOnOrigin` (model centered on the object, so that it turns and scales around its
   feet), `sons_ogg` tracks preferred when present, UTF-8 byte order mark ignored in front of the JSON.
+- `Gaussian4DSequencePlayer`: the platform's scene effects (`effets.trajectoire`, applied in the model's frame
+  before the cadrage, as the ITHACA viewer), `modelRadius`; with a cadrage, the floor is y = 0 of the framed
+  scene and its origin is the placement point (feet were estimated from the robust bounds, which sank models
+  whose point cloud goes under the feet).
+- Diagnostics: `_Gaussian4DEyeDebug` (left eye red, right eye blue) and `Gaussian4DSplatRenderer.lastPassInfo`.
 
 ### Changed
 - The asset data creation moved from the editor creator to `Runtime/GaussianSplatAssetBuilder.cs`, and the
   file readers (`FtgszFileReader`, `PLYFileReader`, `GaussianFileReader`, `SPZFileReader`,
   `TinyJsonParser`) to `Runtime/Utils`, namespace `GaussianSplatting4D.Runtime.Utils`. The creator writes the
-  same bytes as before (90 data files of 3 models × 5 qualities compared); only `dataHash` changes for the
+  same bytes as before (87 data files of 3 models × 5 qualities compared); only `dataHash` changes for the
   chunked qualities, which used to hash the address of a temporary array. The runtime assembly now
   references Burst and Collections.
 - XR Single Pass Instanced / multiview (Meta Quest 3): the 4D URP pass sorts the splats once from the camera,
@@ -48,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- Quest 3 (single-pass stereo): the model was cut in one eye; the splats now use their own depth buffer,
+  cleared per eye. Splats are drawn with explicit per-view matrices and image size (`EyeView.screenSize`) and
+  flipped at composite time when the camera draws straight into the final image (URP global matrices were
+  wrong there: model upside down or stretched splats). The composite accumulates alpha, for transparent
+  backgrounds (passthrough). Background preparation allocates with `Allocator.Persistent` instead of `TempJob`
+  (no more « JobTempAlloc » warnings when it lasts more than 4 frames).
 - Quest 3 (Android, Adreno): isolated black pixels around silhouettes, at the edge of nearly transparent
   splats. Both composite shaders (`Gaussian4DComposite`, `GaussianComposite`) now read the splat target in
   full precision and skip invalid or out-of-range values; a valid render is unchanged.

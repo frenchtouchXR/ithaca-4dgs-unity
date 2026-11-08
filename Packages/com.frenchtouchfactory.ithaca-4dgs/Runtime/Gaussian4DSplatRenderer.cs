@@ -20,6 +20,7 @@ namespace GaussianSplatting4D.Runtime
         public Matrix4x4 view;
         public Matrix4x4 gpuProjection;
         public Vector3 position;
+        public Vector2 screenSize;      // taille de l'image de cette vue (pixels) ; 0 = celle de la camera ou de l'oeil
     }
 
     class Gaussian4DSplatRenderSystem
@@ -143,11 +144,12 @@ namespace GaussianSplatting4D.Runtime
         }
 
         // Dessine les objets actifs [start, end) ; renvoie le materiau de composition, regle sur le mode du groupe
-        public Material SortAndRenderSplats(Camera cam, CommandBuffer cmb, int start, int end)
+        // eye : matrices de la vue (passe URP) ; null = matrices globales de la camera (pipeline integre)
+        public Material SortAndRenderSplats(Camera cam, CommandBuffer cmb, int start, int end, EyeView? eye = null)
         {
             Material matComposite = null;
             for (int i = start; i < end; ++i)
-                matComposite = RenderSplatObject(i, cam, cmb, true, true, null) ?? matComposite;
+                matComposite = RenderSplatObject(i, cam, cmb, true, true, eye) ?? matComposite;
             return matComposite;
         }
 
@@ -295,6 +297,8 @@ namespace GaussianSplatting4D.Runtime
     [ExecuteInEditMode]
     public class Gaussian4DSplatRenderer : MonoBehaviour
     {
+        // derniere passe URP 4D (diagnostic) : vue(s), tailles, cible, retournement
+        public static string lastPassInfo = "";
         public enum RenderMode
         {
             Splats,
@@ -766,6 +770,9 @@ namespace GaussianSplatting4D.Runtime
             int screenW = cam.pixelWidth, screenH = cam.pixelHeight;
             int eyeW = XRSettings.eyeTextureWidth, eyeH = XRSettings.eyeTextureHeight;
             Vector4 screenPar = new Vector4(eyeW != 0 ? eyeW : screenW, eyeH != 0 ? eyeH : screenH, 0, 0);
+            // taille de l'image de la vue (une camera ordinaire, ex. vue du dessus, dans une application avec casque n'a
+            // pas la taille d'un oeil)
+            if (eye.HasValue && eye.Value.screenSize.x > 0) screenPar = new Vector4(eye.Value.screenSize.x, eye.Value.screenSize.y, 0, 0);
             Vector4 camPos = eye?.position ?? cam.transform.position;
 
             // calculate view dependent data for each splat

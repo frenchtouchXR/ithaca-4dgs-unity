@@ -81,6 +81,17 @@ rest of the scene is rendered once for both eyes. Hello ITHACA (197,625 splats) 
 refresh rate, 10 s average) on a Quest 3 this way, sorting every frame. With the new Input System, the camera's `TrackedPoseDriver` needs bindings to
 `<XRHMD>/centerEyePosition` and `<XRHMD>/centerEyeRotation`.
 
+The splats of each view are drawn into an intermediate image with the orientation of a texture, with the view's
+own matrices and image size (`EyeView`), then composited into the camera target, flipped when the camera draws
+straight into the final image (URP Intermediate Texture « Auto »). In single-pass stereo, the splats get their own
+depth buffer, cleared for each eye: the scene's depth slice of an eye could not be used as an attachment (the
+right eye was tested against the left eye's depth, cutting the model in one eye). The composite accumulates
+alpha (opacity, not a²), so that the splats show correctly over a transparent background (Quest passthrough).
+For Quest passthrough with Unity OpenXR: Meta, enable the Session, Camera and Composition Layers OpenXR
+features, disable HDR and keep the Intermediate Texture at « Always ». A shader global,
+`_Gaussian4DEyeDebug = 1`, tints the splats red in the left eye and blue in the right eye (stereo check), and
+`Gaussian4DSplatRenderer.lastPassInfo` describes the last 4D pass (views, sizes, target, flip).
+
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.
 
@@ -117,10 +128,14 @@ Set `template` to a disabled scene object with `Gaussian4DSplatRenderer` and `Ga
 scale, around the robust center of the first sequence) is applied as on the platform's viewer, with its box:
 `interieur` keeps only the splats inside it, `exterieur` only those outside (a `GaussianCutout` box, in the
 scene axes, which does not follow the cadrage's scale, as on the platform). Turn the player's object by 180°
-around X (Y down in ITHACA takes, Y up in Unity). With `feetOnFloor` the model stands on the object's height,
-and with `centerOnOrigin` it is centered (horizontally) on the object, so that scaling or turning the object
-(e.g. with the controllers) keeps the feet in place; the box moves with it. When the box keeps its inside,
-the feet are taken inside the box.
+around X (Y down in ITHACA takes, Y up in Unity). With a cadrage, the floor is the plane y = 0 of the framed
+scene, where its owner put the feet, and the origin of the framed scene is the player's object (the placement
+point), as on the platform's viewer and AR. Without a cadrage, `feetOnFloor` and `centerOnOrigin` estimate the
+feet and the center from the model's robust bounds. Scaling or turning the object (e.g. with the controllers)
+keeps the model on the floor; the box moves with it. The scene effects of the platform (`effets`) are read
+too: their `trajectoire` (displacement of the character in the model's frame, interpolated between key frames,
+before the cadrage) keeps for instance an AI-generated character on the floor. `modelRadius` gives the
+horizontal half-size of the framed model (floor shadow, placement ring).
 
 The share JSON of the platform also gives `sons_ogg`, Ogg Vorbis copies of the tracks that Unity reads on
 Android: they are used when present. `Open(json)` ignores a UTF-8 byte order mark in front of the JSON. Downloaded files are deleted when the render is closed, unless

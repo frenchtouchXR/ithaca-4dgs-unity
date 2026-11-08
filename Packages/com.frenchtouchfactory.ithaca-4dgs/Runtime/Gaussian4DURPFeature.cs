@@ -29,6 +29,9 @@ namespace GaussianSplatting4D.Runtime
             static readonly ProfilingSampler s_profilingSampler = new(ProfilerTag);
             static readonly int s_gaussian4DSplatRT = Shader.PropertyToID(Gaussian4DSplatRTName);
             static readonly int s_gaussian4DSplatDepthRT = Shader.PropertyToID(Gaussian4DSplatDepthRTName);
+            static readonly int s_CompositeFlipY = Shader.PropertyToID("_Gaussian4DCompositeFlipY");
+            static readonly int s_TargetSize = Shader.PropertyToID("_Gaussian4DTargetSize");
+            static readonly int s_EyeIndex = Shader.PropertyToID("_Gaussian4DEyeIndex");
 
             class PassData
             {
@@ -39,6 +42,12 @@ namespace GaussianSplatting4D.Runtime
                 internal TextureHandle GaussianSplatDepthRT;
                 internal bool Stereo;           // casque, deux yeux en une passe (cibles en tableau de 2 tranches)
                 internal readonly EyeView[] Eyes = new EyeView[2];
+                internal bool CompositeFlipY;   // image finale de la camera (orientation d'ecran) : lignes retournees
+                // dans ce cas, la profondeur de la scene (orientation d'ecran) ne peut pas servir au test des gaussiennes
+                // (dessinees en orientation de texture) : profondeur propre aux gaussiennes, videe a chaque vue
+                internal TextureHandle OwnDepth;
+                internal Vector4 TargetSize;
+                internal bool UseOwnDepth;
             }
             static readonly System.Collections.Generic.List<Material> s_GroupComposites = new();
             class DepthPassData
@@ -74,6 +83,20 @@ namespace GaussianSplatting4D.Runtime
 
                 var activeColor = resourceData.activeColorTexture;
                 var activeDepth = resourceData.activeDepthTexture;
+                bool compositeFlipY = SystemInfo.graphicsUVStartsAtTop && resourceData.isActiveTargetBackBuffer;
+                TextureHandle ownDepth = TextureHandle.nullHandle;
+                // casque (deux yeux en une passe) : la profondeur de la scene d'un oeil n'est pas fiable comme attache de
+                // rendu (tranche ignoree, l'oeil droit testait contre celle du gauche : personnage rogne dans un oeil) ;
+                // les gaussiennes ont alors leur propre profondeur, videe pour chaque oeil
+                bool ownDepthNeeded = compositeFlipY || stereo;
+                if (ownDepthNeeded)
+                {
+                    RenderTextureDescriptor d = rtDesc;
+                    d.graphicsFormat = GraphicsFormat.None;
+                    d.depthStencilFormat = GraphicsFormat.D16_UNorm;
+                    d.depthBufferBits = 16;
+                    ownDepth = UniversalRenderer.CreateRenderGraphTexture(renderGraph, d, "_Gaussian4DSplatOwnDepth", true);
+                }
 
                 using (var builder = renderGraph.AddUnsafePass(ProfilerTag, out PassData passData))
                 {
@@ -83,16 +106,25 @@ namespace GaussianSplatting4D.Runtime
                     passData.GaussianSplatRT = textureHandle;
                     passData.GaussianSplatDepthRT = depthRtHandle;
                     passData.Stereo = stereo;
-                    if (stereo)
+                    // matrices de chaque vue : les gaussiennes sont toujours dessinees dans leur image intermediaire avec
+                    // l'orientation d'une texture (la forme 2D des gaussiennes la suppose) ; si la camera dessine directement
+                    // dans l'image finale (texture intermediaire « Auto », casque), la composition retourne les lignes.
+                    // Les matrices globales d'URP s'y trompaient dans ce cas (modele tete en bas, ou gaussiennes etirees).
+                    for (int eye = 0; eye < (stereo ? 2 : 1); ++eye)
                     {
-                        // retournement vertical comme URP : cible intermediaire retournee, image de l'oeil (backbuffer) non
-                        bool flip = SystemInfo.graphicsUVStartsAtTop && !resourceData.isActiveTargetBackBuffer;
-                        for (int eye = 0; eye < 2; ++eye)
-                        {
-                            var view = xr.GetViewMatrix(eye);
-                            passData.Eyes[eye] = new EyeView { view = view, gpuProjection = GL.GetGPUProjectionMatrix(xr.GetProjMatrix(eye), flip), position = view.inverse.GetColumn(3) };
-                        }
+                        var view = xr.enabled ? xr.GetViewMatrix(eye) : cameraData.camera.worldToCameraMatrix;
+                        var proj = xr.enabled ? xr.GetProjMatrix(eye) : cameraData.camera.projectionMatrix;
+                        passData.Eyes[eye] = new EyeView { view = view, gpuProjection = GL.GetGPUProjectionMatrix(proj, true), position = view.inverse.GetColumn(3),
+                                                           screenSize = new Vector2(rtDesc.width, rtDesc.height) };
                     }
+                    passData.CompositeFlipY = compositeFlipY;
+                    passData.TargetSize = Vector4.zero;   // _ScreenParams dans le shader, comme avant
+                    Gaussian4DSplatRenderer.lastPassInfo = $"{(stereo ? "deux yeux" : "une vue")} · camera {cameraData.cameraTargetDescriptor.width}x{cameraData.cameraTargetDescriptor.height} · " +
+                        $"cible {(resourceData.isActiveTargetBackBuffer ? "finale" : "intermediaire")} · ecran {cameraData.camera.pixelWidth}x{cameraData.camera.pixelHeight} · " +
+                        $"oeil {UnityEngine.XR.XRSettings.eyeTextureWidth}x{UnityEngine.XR.XRSettings.eyeTextureHeight} · retournement {compositeFlipY}";
+                    passData.OwnDepth = ownDepth;
+                    passData.UseOwnDepth = ownDepthNeeded;
+                    if (ownDepthNeeded) builder.UseTexture(ownDepth, AccessFlags.Write);
 
                     builder.UseTexture(activeColor, AccessFlags.ReadWrite);
                     builder.UseTexture(activeDepth, stereo ? AccessFlags.ReadWrite : AccessFlags.Read);
@@ -105,13 +137,17 @@ namespace GaussianSplatting4D.Runtime
                         using var _ = new ProfilingScope(commandBuffer, s_profilingSampler);
                         commandBuffer.SetGlobalTexture(s_gaussian4DSplatRT, data.GaussianSplatRT);
                         commandBuffer.SetGlobalTexture(s_gaussian4DSplatDepthRT, data.GaussianSplatDepthRT);
+                        commandBuffer.SetGlobalFloat(s_CompositeFlipY, data.CompositeFlipY ? 1f : 0f);
+                        commandBuffer.SetGlobalVector(s_TargetSize, data.TargetSize);
+                        commandBuffer.SetGlobalFloat(s_EyeIndex, -1);
                         if (data.Stereo)
                         {
                             RenderStereo(data, commandBuffer);
                             return;
                         }
                         var mrt = new RenderTargetIdentifier[] { data.GaussianSplatRT, data.GaussianSplatDepthRT };
-                        CoreUtils.SetRenderTarget(commandBuffer, mrt, data.SourceDepth, ClearFlag.Color, Color.clear);
+                        var depthTarget = data.CompositeFlipY ? (RenderTargetIdentifier)data.OwnDepth : (RenderTargetIdentifier)data.SourceDepth;
+                        CoreUtils.SetRenderTarget(commandBuffer, mrt, depthTarget, data.CompositeFlipY ? ClearFlag.All : ClearFlag.Color, Color.clear);
                         // Une composition par groupe d'objets de meme mode de melange (m_SRGBBlending), du plus lointain
                         // au plus proche. Un seul groupe dans le cas habituel : rendu identique a l'unique composition d'avant.
                         var system = Gaussian4DSplatRenderSystem.instance;
@@ -122,9 +158,9 @@ namespace GaussianSplatting4D.Runtime
                             {
                                 // texture intermediaire videe pour le groupe suivant ; la profondeur des splats s'accumule
                                 CoreUtils.SetRenderTarget(commandBuffer, (RenderTargetIdentifier)data.GaussianSplatRT, ClearFlag.Color, Color.clear);
-                                CoreUtils.SetRenderTarget(commandBuffer, mrt, data.SourceDepth);
+                                CoreUtils.SetRenderTarget(commandBuffer, mrt, depthTarget);
                             }
-                            Material matComposite = system.SortAndRenderSplats(data.CameraData.camera, commandBuffer, groups[g].start, groups[g].end);
+                            Material matComposite = system.SortAndRenderSplats(data.CameraData.camera, commandBuffer, groups[g].start, groups[g].end, data.Eyes[0]);
                             commandBuffer.BeginSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
                             Blitter.BlitCameraTexture(commandBuffer, data.GaussianSplatRT, data.SourceTexture, matComposite, 0);
                             commandBuffer.EndSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
@@ -137,7 +173,7 @@ namespace GaussianSplatting4D.Runtime
                     var sh = Shader.Find("Hidden/Gaussian Splatting/DepthWrite");
                     if (sh != null) s_depthWriteMat = CoreUtils.CreateEngineMaterial(sh);
                 }
-                if (s_depthWriteMat != null && !stereo)   // stereo : ecrit oeil par oeil dans RenderStereo
+                if (s_depthWriteMat != null && !stereo && !compositeFlipY)   // stereo : ecrit oeil par oeil dans RenderStereo
                 {
                     using (var depthBuilder = renderGraph.AddRasterRenderPass<DepthPassData>("Gaussian4DSplatDepthWrite", out DepthPassData dpd))
                     {
@@ -175,25 +211,27 @@ namespace GaussianSplatting4D.Runtime
                     var ev = data.Eyes[eye];
                     var dstColor = new RenderTargetIdentifier((RenderTargetIdentifier)data.SourceTexture, 0, CubemapFace.Unknown, eye);
                     var dstDepth = new RenderTargetIdentifier((RenderTargetIdentifier)data.SourceDepth, 0, CubemapFace.Unknown, eye);
+                    var testDepth = data.UseOwnDepth ? (RenderTargetIdentifier)data.OwnDepth : dstDepth;
 
-                    cmd.SetRenderTarget(mrt, dstDepth);
-                    cmd.ClearRenderTarget(false, true, Color.clear);
+                    cmd.SetRenderTarget(mrt, testDepth);
+                    cmd.ClearRenderTarget(data.UseOwnDepth, true, Color.clear);
                     for (int g = groups.Count - 1; g >= 0; --g)
                     {
                         if (g != groups.Count - 1)
                         {
                             cmd.SetRenderTarget(splat);
                             cmd.ClearRenderTarget(false, true, Color.clear);
-                            cmd.SetRenderTarget(mrt, dstDepth);
+                            cmd.SetRenderTarget(mrt, testDepth);
                         }
                         system.DrawSplatsForEye(cam, cmd, groups[g].start, groups[g].end, ev);
                         cmd.BeginSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
+                        cmd.SetGlobalFloat(s_EyeIndex, eye);       // diagnostic : teinte par oeil (_Gaussian4DEyeDebug)
                         cmd.SetRenderTarget(dstColor);
                         if (s_GroupComposites[g] != null)
                             cmd.DrawProcedural(Matrix4x4.identity, s_GroupComposites[g], 0, MeshTopology.Triangles, 3, 1);
                         cmd.EndSample(Gaussian4DSplatRenderSystem.s_ProfCompose);
                     }
-                    if (s_depthWriteMat != null)
+                    if (s_depthWriteMat != null && !data.UseOwnDepth)
                     {
                         s_depthWriteMat.SetTexture(s_gaussian4DSplatDepthRT, data.GaussianSplatDepthRT);
                         cmd.SetRenderTarget(dstColor, dstDepth);
