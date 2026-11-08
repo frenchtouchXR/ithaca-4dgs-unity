@@ -61,6 +61,13 @@ composites the splats in sRGB like the training renders and the ITHACA browser p
 off for the original aras-p linear compositing. With a velocity-model asset, `Gaussian4DPlayer` sets
 `Duration` to 1 (normalized time) and `Num Frames` to the asset's frame count.
 
+### Building an application
+
+Scenes with `Gaussian4DPlayer` build as standalone players like any other scene. During the build,
+`Editor/Gaussian4DBuildProcessor.cs` assigns each player's Temporal Data Asset (`<asset>_tmp.bytes`
+next to the splat asset) when the field was left empty, since the editor lookup is not available at
+runtime; a warning lists any player for which no file was found. Use Vulkan on Android.
+
 ## License
 
 MIT. See [LICENSE.md](LICENSE.md). This package includes and extends code originally authored

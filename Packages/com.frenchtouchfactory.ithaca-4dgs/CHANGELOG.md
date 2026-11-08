@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- Player builds (Windows, Android…) failed to compile: `Gaussian4DPlayer` called the editor-only
+  `AutoPopulateTemporalDataAsset` from `Awake` and `OnValidate` (CS0103). The calls are now editor-only,
+  and a new build step (`Editor/Gaussian4DBuildProcessor.cs`) assigns each player's `*_tmp.bytes`
+  in the built scenes, so a sequence whose Temporal Data Asset was left empty still animates in the
+  application (a warning is logged when none is found).
 - FreeTimeGS: splats are culled when their current opacity (base x temporal) falls below 1/255, like
   the browser player, instead of the 4C4D rule (`temporalCutoff` on the temporal factor alone) that
   made them pop in at 5 % opacity on contours during playback. `temporalCutoff` still applies to 4C4D.

@@ -45,7 +45,15 @@ namespace GaussianSplatting4D.Runtime
 
         Gaussian4DSplatRenderer m_Renderer;
 
-        void Awake() { m_Renderer = GetComponent<Gaussian4DSplatRenderer>(); AutoPopulateTemporalDataAsset(); ApplyAssetTiming(); UploadTemporalData(); }
+        void Awake()
+        {
+            m_Renderer = GetComponent<Gaussian4DSplatRenderer>();
+#if UNITY_EDITOR
+            AutoPopulateTemporalDataAsset();
+#endif
+            ApplyAssetTiming();
+            UploadTemporalData();
+        }
 
         // FreeTimeGS : temps normalise -> duree 1, nombre de frames de l'asset
         void ApplyAssetTiming()
@@ -134,7 +142,9 @@ namespace GaussianSplatting4D.Runtime
             ApplyAssetTiming();
             previewTime = Mathf.Clamp(previewTime, 0f, duration);
             m_Renderer.m_TemporalCurrentTime = previewTime;
+#if UNITY_EDITOR
             AutoPopulateTemporalDataAsset();
+#endif
             if (m_GpuTemporalData == null && temporalDataAsset != null)
                 UploadTemporalData();
             if (m_GpuTemporalData != null)
@@ -198,8 +208,9 @@ namespace GaussianSplatting4D.Runtime
         // Auto-assigne temporalDataAsset si vide, en cherchant <nomAsset>_tmp.bytes a cote de
         // l'asset assigne dans Gaussian4DSplatRenderer.m_Asset (meme dossier, meme nom de base
         // + suffixe _tmp -- convention utilisee par GaussianSplatAssetCreator, voir doc section
-        // 4.2/7.2). Editeur seulement : AssetDatabase indisponible en build.
-        void AutoPopulateTemporalDataAsset()
+        // 4.2/7.2). Editeur seulement : AssetDatabase indisponible en build ; pour les applications,
+        // Gaussian4DBuildProcessor l'appelle sur les scenes au moment de la construction.
+        public void AutoPopulateTemporalDataAsset()
         {
             if (temporalDataAsset != null) return;
             if (m_Renderer == null) m_Renderer = GetComponent<Gaussian4DSplatRenderer>();
