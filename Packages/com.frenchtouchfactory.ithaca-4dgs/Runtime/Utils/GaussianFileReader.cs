@@ -11,7 +11,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Assertions;
 
-namespace GaussianSplatting4D.Editor.Utils
+namespace GaussianSplatting4D.Runtime.Utils
 {
     // input file splat data is read into this format
     public struct InputSplatData
@@ -94,13 +94,16 @@ namespace GaussianSplatting4D.Editor.Utils
         {
             temporalKind = TemporalKind.None;
             ftgsInfo = default;
+            string decode = null;
             if (FtgszFileReader.IsFtgsz(filePath))
-                filePath = FtgszFileReader.ResolveToPly(filePath);       // FreeTimeGS ou 4C4D compresse
+                filePath = decode = FtgszFileReader.ResolveToPly(filePath);       // FreeTimeGS ou 4C4D compresse
             if (isPLY(filePath))
             {
                 NativeArray<byte> plyRawData;
                 List<(string, PLYFileReader.ElementType)> attributes;
                 PLYFileReader.ReadFile(filePath, out var splatCount, out var vertexStride, out attributes, out var comments, out plyRawData);
+                if (decode != null && FtgszFileReader.DeleteAfterRead)
+                    File.Delete(decode);                                       // application : rien ne reste sur l'appareil
                 temporalKind = DetectTemporalKind(attributes);
                 if (temporalKind == TemporalKind.FreeTimeGS)
                     ftgsInfo = ParseFtgsHeader(filePath, comments, attributes);
@@ -163,7 +166,7 @@ namespace GaussianSplatting4D.Editor.Utils
 
         static unsafe NativeArray<InputSplatData> PLYDataToSplats(NativeArray<byte> input, int count, int stride, List<(string, PLYFileReader.ElementType)> attributes)
         {
-            NativeArray<int> fileAttrOffsets = new NativeArray<int>(attributes.Count, Allocator.Temp);
+            NativeArray<int> fileAttrOffsets = new NativeArray<int>(attributes.Count, Allocator.Persistent);   // Temp : fil principal seulement
             int offset = 0;
             for (var ai = 0; ai < attributes.Count; ai++)
             {
@@ -255,7 +258,7 @@ namespace GaussianSplatting4D.Editor.Utils
             int restPerChannel = restCount / 3;
             const int kRestStart = 9, kRestPerChannel = 15;
             Assert.AreEqual(UnsafeUtility.SizeOf<InputSplatData>() / 4, splatAttributes.Length);
-            NativeArray<int> srcOffsets = new NativeArray<int>(splatAttributes.Length, Allocator.Temp);
+            NativeArray<int> srcOffsets = new NativeArray<int>(splatAttributes.Length, Allocator.Persistent);
             for (int ai = 0; ai < splatAttributes.Length; ai++)
             {
                 string attrName = splatAttributes[ai];
@@ -271,6 +274,8 @@ namespace GaussianSplatting4D.Editor.Utils
             
             NativeArray<InputSplatData> dst = new NativeArray<InputSplatData>(count, Allocator.Persistent);
             ReorderPLYData(count, (byte*)input.GetUnsafeReadOnlyPtr(), stride, (byte*)dst.GetUnsafePtr(), UnsafeUtility.SizeOf<InputSplatData>(), (int*)srcOffsets.GetUnsafeReadOnlyPtr());
+            srcOffsets.Dispose();
+            fileAttrOffsets.Dispose();
             return dst;
         }
 
@@ -344,7 +349,7 @@ namespace GaussianSplatting4D.Editor.Utils
         {
             LinearizeDataJob job = new LinearizeDataJob();
             job.splatData = splatData;
-            job.Schedule(splatData.Length, 4096).Complete();
+            GaussianSplatting4D.Runtime.GaussianSplatAssetBuilder.Run(job, splatData.Length, 4096);
         }
     }
 }

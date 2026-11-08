@@ -9,7 +9,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace GaussianSplatting4D.Editor.Utils
+namespace GaussianSplatting4D.Runtime.Utils
 {
     // reads Niantic/Scaniverse .SPZ files:
     // https://github.com/nianticlabs/spz
@@ -35,7 +35,7 @@ namespace GaussianSplatting4D.Editor.Utils
 
         static void ReadHeaderImpl(string filePath, Stream fs, out int vertexCount, out int shLevel, out int fractBits, out int flags)
         {
-            var header = new NativeArray<SpzHeader>(1, Allocator.Temp);
+            using var header = new NativeArray<SpzHeader>(1, Allocator.Persistent);   // Temp : fil principal seulement
             var readBytes = fs.Read(header.Reinterpret<byte>(16));
             if (readBytes != 16)
                 throw new IOException($"SPZ {filePath} read error, failed to read header");

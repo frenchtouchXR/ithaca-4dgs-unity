@@ -195,6 +195,21 @@ namespace GaussianSplatting4D.Runtime
             SetCurrentTime(m_CurrentTime);
         }
 
+        // Donnees temporelles changees en cours d'execution (Gaussian4DSequencePlayer, assets crees par
+        // GaussianSplatRuntimeLoader) : a appeler une fois l'asset du renderer pris en compte (objet reactive).
+        public void SetTemporalData(TextAsset data)
+        {
+            temporalDataAsset = data;
+            if (m_Renderer == null) m_Renderer = GetComponent<Gaussian4DSplatRenderer>();
+            ApplyAssetTiming();
+            UploadTemporalData();
+            if (m_Renderer != null)
+            {
+                m_Renderer.m_Is4D = 1f;
+                SetCurrentTime(previewTime);
+            }
+        }
+
         public void Play()  { m_IsPlaying = true; }
         public void Stop()  { m_IsPlaying = false; m_CurrentTime = 0f; SetCurrentTime(0f); }
         public void Pause() { m_IsPlaying = false; }

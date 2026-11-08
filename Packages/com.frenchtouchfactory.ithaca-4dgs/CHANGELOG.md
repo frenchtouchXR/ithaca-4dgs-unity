@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Loading while the application runs: `GaussianSplatRuntimeLoader` builds a `GaussianSplatAsset` from a
+  `.ftgsz`, `.ply` or `.spz` file (VeryHigh, High and Medium qualities), on a background thread
+  (`PrepareAsync`) then on the main thread (`CreateAsset`).
+- `Gaussian4DSequencePlayer`: streams an ITHACA render cut into sequences (share JSON of the ITHACA
+  platform), with sound leading the playback, the render's `cadrage`, feet on the floor, and the downloaded
+  files deleted on close.
+- `Gaussian4DPlayer.SetTemporalData`: changes the temporal data of a player while the application runs.
+
+### Changed
+- The asset data creation moved from the editor creator to `Runtime/GaussianSplatAssetBuilder.cs`, and the
+  file readers (`FtgszFileReader`, `PLYFileReader`, `GaussianFileReader`, `SPZFileReader`,
+  `TinyJsonParser`) to `Runtime/Utils`, namespace `GaussianSplatting4D.Runtime.Utils`. The creator writes the
+  same bytes as before (90 data files of 3 models × 5 qualities compared); only `dataHash` changes for the
+  chunked qualities, which used to hash the address of a temporary array. The runtime assembly now
+  references Burst and Collections.
 - XR Single Pass Instanced / multiview (Meta Quest 3): the 4D URP pass sorts the splats once from the camera,
   then for each eye computes the view data with that eye's view and projection matrices (`EyeView`,
   `_MatrixVPEye` / `_MatrixPEye` in `Splat4DUtilities.compute`) and draws and composites them into the eye's

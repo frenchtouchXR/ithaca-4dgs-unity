@@ -51,8 +51,13 @@ automatically), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4D
   (`Tools > Gaussian Splats > Create GaussianSplatAsset`), extended to read temporal PLY
   attributes and emit a companion `*_tmp.bytes` file; accepts `.ply`, `.spz` and `.ftgsz`; the
   detected type (3DGS or 4D) is shown in the window, and every quality preset applies
-- `Editor/Utils/FtgszFileReader.cs` — `.ftgsz` reader (ITHACA compressed 4D format v2): decoded
-  once into an equivalent PLY, cached in `Library/Ftgsz/`, then imported like any PLY
+- `Runtime/Utils/FtgszFileReader.cs` — `.ftgsz` reader (ITHACA compressed 4D format v2): decoded
+  once into an equivalent PLY, cached in `Library/Ftgsz/` in the editor, then imported like any PLY
+  (in a player, the decoded PLY is deleted as soon as it has been read)
+- `Runtime/GaussianSplatAssetBuilder.cs` — the asset data (Morton order, chunks, positions, rotations
+  and scales, colors, SH, temporal data), shared by the editor creator and runtime loading
+- `Runtime/GaussianSplatRuntimeLoader.cs` — loads a `.ftgsz`, `.ply` or `.spz` while the application runs
+- `Runtime/Gaussian4DSequencePlayer.cs` — streams an ITHACA render cut into sequences, with sound
 - `Shaders/Splat4DUtilities.compute` — temporal evaluation (4D rotation conditional covariance, or
   velocity, temporal opacity and sequence window)
 
@@ -78,6 +83,43 @@ refresh rate, 10 s average) on a Quest 3 this way, sorting every frame. With the
 
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.
+
+### Loading models while the application runs
+
+`GaussianSplatRuntimeLoader` turns a `.ftgsz`, `.ply` or `.spz` file (3DGS, 4C4D or FreeTimeGS) into a
+`GaussianSplatAsset` without the editor. It goes through the same steps as the creator window, with the
+same code (`GaussianSplatAssetBuilder`), for the VeryHigh, High and Medium qualities (SH clustering and BC7
+colors stay editor-only):
+
+```csharp
+var prepared = await GaussianSplatRuntimeLoader.PrepareAsync(path, GaussianSplatRuntimeLoader.Quality.VeryHigh); // background thread
+var asset = GaussianSplatRuntimeLoader.CreateAsset(prepared);                                                       // main thread
+```
+
+Prepared on the main thread, the data is byte-identical to the editor's. On a background thread, Unity's job
+system is not available, so the same jobs run directly in C#; floats then differ from the Burst-compiled editor
+in the last bit at most (rotations: at most one 10-bit step), which is invisible. A sequence of about 200,000
+splats is prepared in 0.3 s on a desktop PC and 0.5 s on a Quest 3.
+
+### Streaming an ITHACA render
+
+`Gaussian4DSequencePlayer` plays an ITHACA render cut into `.ftgsz` sequences, as described by the share JSON
+of the ITHACA platform (`total`, `fps`, `sequences` with `url`, `premiere`, `images`, `sons`, `decalage_son`,
+`cadrage`). URLs may be `http(s)` links or local paths. Each sequence is downloaded into the application's
+temporary cache, prepared on a background thread while the previous one plays, and shown in one of two slots
+(the current sequence and the next one, uploaded to the GPU shortly before its first frame). The sound leads:
+all tracks start together on the audio clock, offset by `decalage_son`, and the splats follow; if the next
+sequence is not ready in time, picture and sound wait. Unity reads mp3, ogg and wav (not m4a on Android): the
+platform provides an Ogg Vorbis copy of every track (`sons_ogg`).
+
+Set `template` to a disabled scene object with `Gaussian4DSplatRenderer` and `Gaussian4DPlayer` already set up
+(shaders, blending); it is cloned into the two slots. The render's `cadrage` (position, rotation `Rz Ry Rx`,
+scale, around the robust center of the first sequence) is applied as on the platform's viewer; turn the
+player's object by 180° around X (Y down in ITHACA takes, Y up in Unity), and with `feetOnFloor` the model
+stands on the object's height. Downloaded files are deleted when the render is closed, unless
+`keepDownloads` is set. Some sites refuse Unity's default user agent: `userAgent` is sent with every request.
+On a Quest 3, the Thriller Cat (14 sequences of about 200,000 splats, 2 s each) plays with its sound in sync,
+each sequence being prepared in 0.5 s.
 
 ## License
 

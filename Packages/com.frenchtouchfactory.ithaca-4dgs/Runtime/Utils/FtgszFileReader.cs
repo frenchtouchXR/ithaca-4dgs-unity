@@ -8,7 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
 
-namespace GaussianSplatting4D.Editor.Utils
+namespace GaussianSplatting4D.Runtime.Utils
 {
     // Lit les sequences 4DGS compressees ITHACA (.ftgsz v2 : FreeTimeGS ou 4C4D). Le fichier est decode en un PLY
     // identique de structure a l'original (memes champs, meme en-tete), ecrit une fois dans Library/Ftgsz/ (cache du projet, conserve entre les sessions) et relu ensuite
@@ -56,6 +56,12 @@ namespace GaussianSplatting4D.Editor.Utils
 
         public static bool IsFtgsz(string filePath) => filePath.EndsWith(".ftgsz", true, CultureInfo.InvariantCulture);
 
+        // Application : dossier du PLY decode, fixe sur le fil principal par GaussianSplatRuntimeLoader (les chemins de
+        // Unity ne se lisent pas sur un autre fil) ; le PLY y est efface des qu'il a ete lu (DeleteAfterRead). Editeur :
+        // null, Library/Ftgsz conserve.
+        public static string runtimeCacheDir;
+        public static bool DeleteAfterRead => runtimeCacheDir != null;
+
         // Chemin du PLY decode (cree au premier appel, puis repris tant que le .ftgsz ne change pas)
         public static string ResolveToPly(string filePath)
         {
@@ -64,7 +70,8 @@ namespace GaussianSplatting4D.Editor.Utils
             using (var md5 = MD5.Create())
                 cle = BitConverter.ToString(md5.ComputeHash(Encoding.UTF8.GetBytes(
                     $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}"))).Replace("-", "").Substring(0, 16);
-            string dossier = Path.Combine(Path.GetDirectoryName(Application.dataPath) ?? ".", "Library", "Ftgsz");
+            // editeur : Library/Ftgsz du projet ; application : runtimeCacheDir (Library n'existe pas)
+            string dossier = runtimeCacheDir ?? Path.Combine(Path.GetDirectoryName(Application.dataPath) ?? ".", "Library", "Ftgsz");
             Directory.CreateDirectory(dossier);
             string sortie = Path.Combine(dossier, $"{Path.GetFileNameWithoutExtension(filePath)}_{cle}.ply");
             if (!File.Exists(sortie))

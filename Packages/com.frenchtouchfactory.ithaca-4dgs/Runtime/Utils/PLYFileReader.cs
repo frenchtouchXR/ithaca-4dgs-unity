@@ -7,7 +7,7 @@ using System.Linq;
 using System.Text;
 using Unity.Collections;
 
-namespace GaussianSplatting4D.Editor.Utils
+namespace GaussianSplatting4D.Runtime.Utils
 {
     public static class PLYFileReader
     {
