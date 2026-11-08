@@ -72,8 +72,8 @@ On Meta Quest 3 (OpenXR, Vulkan), 4D sequences render in both stereo modes of
 `Project Settings > XR Plug-in Management > OpenXR > Android > Render Mode`. With Single Pass Instanced
 (multiview, recommended), the 4D pass sorts the splats once from the camera, then computes the view data and
 draws them for each eye with that eye's matrices, compositing into the eye's slice of the camera target; the
-rest of the scene is rendered once for both eyes. Hello ITHACA (197,625 splats) runs at about 59 fps on a
-Quest 3 this way. With the new Input System, the camera's `TrackedPoseDriver` needs bindings to
+rest of the scene is rendered once for both eyes. Hello ITHACA (197,625 splats) runs at 72 fps (the headset's
+refresh rate, 10 s average) on a Quest 3 this way, sorting every frame. With the new Input System, the camera's `TrackedPoseDriver` needs bindings to
 `<XRHMD>/centerEyePosition` and `<XRHMD>/centerEyeRotation`.
 
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
