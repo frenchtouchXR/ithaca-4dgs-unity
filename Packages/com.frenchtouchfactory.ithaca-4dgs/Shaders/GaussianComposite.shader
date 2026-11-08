@@ -33,9 +33,14 @@ v2f vert (uint vtxID : SV_VertexID)
 Texture2D _GaussianSplatRT;
 float _CompositeGamma;   // 1 : melange sRGB (Gaussian4DSplatRenderer.m_SRGBBlending) ; 0 : melange lineaire d'origine
 
-half4 frag (v2f i) : SV_Target
+float4 frag (v2f i) : SV_Target
 {
-    half4 col = _GaussianSplatRT.Load(int3(i.vertex.xy, 0));
+    // Pleine precision, valeurs invalides ou hors bornes ignorees : sur GPU mobile (Quest 3, Adreno), les gaussiennes
+    // presque transparentes donnaient des pixels noirs isoles au bord des silhouettes. Sans effet sur un rendu sain.
+    float4 col = _GaussianSplatRT.Load(int3(i.vertex.xy, 0));
+    if (any(isnan(col)) || any(isinf(col)) || col.a <= 0) discard;
+    col = max(col, 0);
+    col.a = min(col.a, 1);
     // Melange sRGB (comme l'entrainement et le lecteur navigateur) : la couleur premultipliee c*a est rendue
     // telle quelle en sRGB, puis melangee au fond. Avec Blend SrcAlpha, on renvoie donc lin(c*a)/a.
     // Melange lineaire d'origine : lin(c), qui eclaircit les zones translucides (contours).

@@ -38,6 +38,9 @@ namespace GaussianSplatting4D.Runtime
 
         bool m_IsPlaying = false;
         float m_CurrentTime = 0f;
+        // FreeTimeGS : plage de lecture = fenetre des sequences presentes dans le fichier (une sequence seule
+        // n'occupe qu'une partie du temps de la prise : sans cela, rien a l'ecran le reste de la boucle)
+        float m_PlayStart = 0f, m_PlayEnd = -1f;
         GraphicsBuffer m_GpuTemporalData;
 
         static readonly int PropSplatTemporal    = Shader.PropertyToID("_SplatTemporal");
@@ -179,11 +182,14 @@ namespace GaussianSplatting4D.Runtime
                 SetCurrentTime(previewTime);
                 return;
             }
+            float debut = m_PlayEnd > m_PlayStart ? m_PlayStart : 0f;
+            float fin = m_PlayEnd > m_PlayStart ? m_PlayEnd : duration;
+            if (m_CurrentTime < debut) m_CurrentTime = debut;
             m_CurrentTime += Time.deltaTime * (duration / (numFrames / fps));
-            if (m_CurrentTime >= duration)
+            if (m_CurrentTime >= fin)
             {
-                if (loop) m_CurrentTime = m_CurrentTime % duration;
-                else { m_CurrentTime = duration; m_IsPlaying = false; }
+                if (loop) m_CurrentTime = debut + (m_CurrentTime - debut) % (fin - debut);
+                else { m_CurrentTime = fin; m_IsPlaying = false; }
             }
             previewTime = m_CurrentTime;
             SetCurrentTime(m_CurrentTime);
@@ -245,6 +251,19 @@ namespace GaussianSplatting4D.Runtime
             int nSplats = bytes.Length / TemporalStride;
             bool ftgs = m_Renderer != null && m_Renderer.m_Asset != null && m_Renderer.m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS;
             Debug.Log($"[Gaussian4DPlayer] {nSplats} splats ({(ftgs ? "FreeTimeGS" : "4C4D")})");
+            m_PlayStart = 0f; m_PlayEnd = -1f;
+            if (ftgs && TemporalStride == 32 && nSplats > 0)
+            {
+                // win_start / win_end : floats 5 et 6 de chaque enregistrement (fenetre elargie d'une demi-frame)
+                float a = float.MaxValue, b = float.MinValue;
+                for (int i = 0; i < nSplats; i++)
+                {
+                    a = Mathf.Min(a, BitConverter.ToSingle(bytes, i * 32 + 20));
+                    b = Mathf.Max(b, BitConverter.ToSingle(bytes, i * 32 + 24));
+                }
+                a = Mathf.Max(a, 0f); b = Mathf.Min(b, 1f);
+                if (b > a && (a > 0f || b < 1f)) { m_PlayStart = a; m_PlayEnd = b; Debug.Log($"[Gaussian4DPlayer] plage de lecture {a:0.####} - {b:0.####}"); }
+            }
             m_Renderer.m_GpuTemporalDummy = m_GpuTemporalData;
         }
 

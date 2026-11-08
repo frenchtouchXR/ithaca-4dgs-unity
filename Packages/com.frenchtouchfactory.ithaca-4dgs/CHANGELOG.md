@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- Quest 3 (Android, Adreno): isolated black pixels around silhouettes, at the edge of nearly transparent
+  splats. Both composite shaders (`Gaussian4DComposite`, `GaussianComposite`) now read the splat target in
+  full precision and skip invalid or out-of-range values; a valid render is unchanged.
+- FreeTimeGS: a file holding only some sequences of a take (e.g. one sequence downloaded on its own) was
+  played over the whole take, showing nothing outside its sequence window. `Gaussian4DPlayer` now loops
+  over the window of the sequences present in the file (read from `*_tmp.bytes`).
 - Player builds (Windows, Android…) failed to compile: `Gaussian4DPlayer` called the editor-only
   `AutoPopulateTemporalDataAsset` from `Awake` and `OnValidate` (CS0103). The calls are now editor-only,
   and a new build step (`Editor/Gaussian4DBuildProcessor.cs`) assigns each player's `*_tmp.bytes`

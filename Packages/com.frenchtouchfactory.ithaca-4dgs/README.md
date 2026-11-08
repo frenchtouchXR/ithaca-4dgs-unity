@@ -68,6 +68,14 @@ Scenes with `Gaussian4DPlayer` build as standalone players like any other scene.
 next to the splat asset) when the field was left empty, since the editor lookup is not available at
 runtime; a warning lists any player for which no file was found. Use Vulkan on Android.
 
+On Meta Quest 3 (OpenXR, Vulkan), 4D sequences render with the stereo rendering mode set to Multi-pass
+(`Project Settings > XR Plug-in Management > OpenXR > Android > Render Mode`): the renderer computes one
+view per pass and does not support Single Pass Instanced yet. With the new Input System, the camera's
+`TrackedPoseDriver` needs bindings to `<XRHMD>/centerEyePosition` and `<XRHMD>/centerEyeRotation`.
+
+A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
+plays and loops over that sequence only.
+
 ## License
 
 MIT. See [LICENSE.md](LICENSE.md). This package includes and extends code originally authored
