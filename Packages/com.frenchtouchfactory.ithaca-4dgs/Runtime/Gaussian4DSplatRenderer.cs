@@ -88,7 +88,7 @@ namespace GaussianSplatting4D.Runtime
             foreach (var kvp in m_Splats)
             {
                 var gs = kvp.Key;
-                if (gs == null || !gs.isActiveAndEnabled || !gs.HasValidAsset || !gs.HasValidRenderSetup)
+                if (gs == null || !gs.isActiveAndEnabled || !gs.HasValidAsset || !gs.HasValidRenderSetup || gs.suspended)
                     continue;
                 m_ActiveSplats.Add((kvp.Key, kvp.Value));
             }
@@ -137,6 +137,8 @@ namespace GaussianSplatting4D.Runtime
             }
             return m_CompositeGroups;
         }
+
+        internal int ActiveSplatCount => m_ActiveSplats.Count;
 
         public Material SortAndRenderSplats(Camera cam, CommandBuffer cmb)
         {
@@ -299,6 +301,22 @@ namespace GaussianSplatting4D.Runtime
     {
         // derniere passe URP 4D (diagnostic) : vue(s), tailles, cible, retournement
         public static string lastPassInfo = "";
+
+        // donnees sur le GPU mais rien de dessine (ni tri, ni calcul de vue) : sequence suivante preparee d'avance par
+        // Gaussian4DSequencePlayer, montree a sa premiere image
+        [System.NonSerialized] public bool suspended;
+
+        // Vues hors ecran (passe URP 4D) : images supplementaires des gaussiennes, dessinees dans le rendu de la camera
+        // principale avant ses objets opaques, sans tri (couverture : l'alpha accumule ne depend pas de l'ordre), une
+        // fois par image ; par exemple la silhouette vue du dessus d'une ombre au sol, sans deuxieme camera.
+        public class OffscreenView
+        {
+            public bool enabled = true;
+            public RenderTexture target;            // couleur (alpha = couverture) et profondeur ; ARGBHalf conseille
+            public Matrix4x4 view, projection;      // matrices de la vue (projection non convertie pour le GPU)
+            public System.Action<CommandBuffer> after;   // traitement de l'image juste apres (flou...)
+        }
+        public static readonly System.Collections.Generic.List<OffscreenView> offscreenViews = new();
 
         // cameras qui n'ont besoin que de la couverture (alpha) des gaussiennes, par exemple la silhouette d'une ombre :
         // dessinees sans tri. L'alpha accumule (1 - produit des 1 - a) ne depend pas de l'ordre, seule la couleur en

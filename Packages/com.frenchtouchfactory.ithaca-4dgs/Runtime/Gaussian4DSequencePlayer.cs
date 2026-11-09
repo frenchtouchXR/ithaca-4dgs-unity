@@ -320,6 +320,9 @@ namespace GaussianSplatting4D.Runtime
                     {
                         s.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
                         s.player.previewTime = u;
+                        // seule la sequence en cours est dessinee ; la suivante attend sur le GPU (avant : dessinee
+                        // aussi, en permanence pour un rendu de deux sequences en boucle, deux fois plus de gaussiennes)
+                        s.renderer.suspended = s.seq != cur;
                         // une sequence finie est retiree (sauf si c'est aussi la suivante, rendu a une sequence)
                         if (s.seq != cur && s.seq != next) Deactivate(s);
                     }

@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the cadrage, as the ITHACA viewer), `modelRadius`; with a cadrage, the floor is y = 0 of the framed
   scene and its origin is the placement point (feet were estimated from the robust bounds, which sank models
   whose point cloud goes under the feet).
+- `Gaussian4DSplatRenderer.offscreenViews`: extra images of the splats (e.g. a ground shadow silhouette seen
+  from above) drawn once per frame inside the main camera's frame, before its opaques, unsorted, without a second
+  camera; `after` callback for post-processing (blur).
+- `Gaussian4DSplatRenderer.suspended`: GPU data kept, nothing sorted nor drawn.
 - `Gaussian4DSplatRenderer.coverageOnlyCameras`: cameras drawn without sorting the splats, for alpha-only uses
   such as a ground shadow silhouette (same alpha, one sort per frame saved).
 - Diagnostics: `_Gaussian4DEyeDebug` (left eye red, right eye blue) and `Gaussian4DSplatRenderer.lastPassInfo`.
@@ -55,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- `Gaussian4DSequencePlayer`: the next sequence, uploaded ahead, was also drawn (sorted and rasterized while
+  invisible outside its window) until it became current; for a two-sequence render looping, both were drawn all
+  the time (Quest 3: 36 fps instead of 72 for Hello ITHACA). It is now `suspended` until its first frame.
+- Single-pass stereo: the splats no longer write the splat depth target, unused with their own depth buffer
+  (less memory traffic per pixel; same image).
 - FreeTimeGS sequence window: frame f is shown up to f + 1 excluded (ITHACA rule of 23/10/2026, same as the
   browser player and `render_freetimegs.py`). The window is now [first frame − 1 % of a frame, last frame +
   0.99 frame[ instead of half a frame on each side, and the shader test excludes the end (`>=`), so two

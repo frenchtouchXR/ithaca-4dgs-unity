@@ -97,6 +97,16 @@ be added to `Gaussian4DSplatRenderer.coverageOnlyCameras`: their splats are draw
 alpha does not depend on the drawing order (only the color does), so the silhouette is the same, without a second
 sort of every splat each frame.
 
+Cheaper still, `Gaussian4DSplatRenderer.offscreenViews` draws such images without a second camera: each
+`OffscreenView` (target texture, view and projection matrices, optional `after` callback, e.g. a blur) is
+rendered once per frame inside the main camera's frame, before its opaque objects, unsorted. On a Quest 3 the
+ITHACA viewer's ground shadow went from about 10 fps to about 7 fps this way (72 fps without shadow, 65 with,
+Hello ITHACA in passthrough). Use an `ARGBHalf` target: coverage accumulates directly in it.
+
+In single-pass stereo, the splats only write their color (the splat depth target is not used with their own
+depth buffer). The remaining cost on a Quest 3 is fill rate: the frame rate drops as the model fills more of the
+view.
+
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.
 
@@ -123,7 +133,8 @@ splats is prepared in 0.3 s on a desktop PC and 0.5 s on a Quest 3.
 of the ITHACA platform (`total`, `fps`, `sequences` with `url`, `premiere`, `images`, `sons`, `decalage_son`,
 `cadrage`). URLs may be `http(s)` links or local paths. Each sequence is downloaded into the application's
 temporary cache, prepared on a background thread while the previous one plays, and shown in one of two slots
-(the current sequence and the next one, uploaded to the GPU shortly before its first frame). The sound leads:
+(the current sequence and the next one, uploaded to the GPU shortly before its first frame and drawn from that
+frame on: until then it is `suspended`, neither sorted nor drawn). The sound leads:
 all tracks start together on the audio clock, offset by `decalage_son`, and the splats follow; if the next
 sequence is not ready in time, picture and sound wait. Unity reads mp3, ogg and wav (not m4a on Android): the
 platform provides an Ogg Vorbis copy of every track (`sons_ogg`).

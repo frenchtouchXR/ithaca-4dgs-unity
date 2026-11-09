@@ -205,7 +205,10 @@ namespace GaussianSplatting4D.Runtime
                     s_GroupComposites.Add(system.SortSplats(cam, cmd, groups[g].start, groups[g].end));
 
                 var splat = (RenderTargetIdentifier)data.GaussianSplatRT;
-                var mrt = new RenderTargetIdentifier[] { splat, data.GaussianSplatDepthRT };
+                // profondeur des gaussiennes (2e cible) : relue seulement pour l'ecrire dans celle de la scene, ce qui
+                // n'est pas fait avec la profondeur propre ; sans elle, chaque gaussienne n'ecrit plus qu'une image
+                // (memoire de la carte graphique : le Quest ralentit avec la place du modele a l'ecran)
+                var mrt = data.UseOwnDepth ? new RenderTargetIdentifier[] { splat } : new RenderTargetIdentifier[] { splat, data.GaussianSplatDepthRT };
                 for (int eye = 0; eye < 2; ++eye)
                 {
                     var ev = data.Eyes[eye];
@@ -242,7 +245,50 @@ namespace GaussianSplatting4D.Runtime
             }
         }
 
+        // vues hors ecran (Gaussian4DSplatRenderer.offscreenViews) : une fois par image, avant les opaques de la camera
+        class OffscreenPass : ScriptableRenderPass
+        {
+            class Data { internal UniversalCameraData CameraData; internal bool Stereo; }
+            static readonly int s_TargetSize = Shader.PropertyToID("_Gaussian4DTargetSize");
+            static readonly int s_AuxDepth = Shader.PropertyToID("_Gaussian4DOffscreenDepth");
+            internal static int s_LastFrame = -1;
+
+            public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+            {
+                var cameraData = frameData.Get<UniversalCameraData>();
+                using var builder = renderGraph.AddUnsafePass("Gaussian4DOffscreenViews", out Data data);
+                data.CameraData = cameraData;
+                data.Stereo = cameraData.xr.enabled && cameraData.xr.singlePassEnabled;
+                builder.AllowPassCulling(false);
+                builder.AllowGlobalStateModification(true);
+                builder.SetRenderFunc(static (Data data, UnsafeGraphContext context) =>
+                {
+                    var cmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
+                    if (data.Stereo) data.CameraData.xr.StopSinglePass(cmd);
+                    var system = Gaussian4DSplatRenderSystem.instance;
+                    int n = system.ActiveSplatCount;
+                    foreach (var v in Gaussian4DSplatRenderer.offscreenViews)
+                    {
+                        if (!v.enabled || v.target == null) continue;
+                        int w = v.target.width, h = v.target.height;
+                        cmd.GetTemporaryRT(s_AuxDepth, w, h, 0, FilterMode.Point, GraphicsFormat.R16_SFloat);
+                        var ev = new EyeView { view = v.view, gpuProjection = GL.GetGPUProjectionMatrix(v.projection, true),
+                                               position = v.view.inverse.GetColumn(3), screenSize = new Vector2(w, h) };
+                        cmd.SetGlobalVector(s_TargetSize, new Vector4(w, h, 0, 0));
+                        cmd.SetRenderTarget(new RenderTargetIdentifier[] { v.target, s_AuxDepth }, v.target.depthBuffer);
+                        cmd.ClearRenderTarget(true, true, Color.clear);
+                        system.DrawSplatsForEye(data.CameraData.camera, cmd, 0, n, ev);
+                        cmd.ReleaseTemporaryRT(s_AuxDepth);
+                        v.after?.Invoke(cmd);
+                    }
+                    cmd.SetGlobalVector(s_TargetSize, Vector4.zero);
+                    if (data.Stereo) data.CameraData.xr.StartSinglePass(cmd);
+                });
+            }
+        }
+
         GSRenderPass m_Pass;
+        OffscreenPass m_Offscreen;
         bool m_HasCamera;
 
         public override void Create()
@@ -251,6 +297,7 @@ namespace GaussianSplatting4D.Runtime
             {
                 renderPassEvent = RenderPassEvent.BeforeRenderingTransparents
             };
+            m_Offscreen = new OffscreenPass { renderPassEvent = RenderPassEvent.BeforeRenderingOpaques };
         }
 
         public override void OnCameraPreCull(ScriptableRenderer renderer, in CameraData cameraData)
@@ -267,6 +314,14 @@ namespace GaussianSplatting4D.Runtime
         {
             if (!m_HasCamera)
                 return;
+            // vues hors ecran : une fois par image, avec la premiere camera de jeu qui voit des gaussiennes
+            var cam = renderingData.cameraData.camera;
+            if (Gaussian4DSplatRenderer.offscreenViews.Count > 0 && cam.cameraType == CameraType.Game &&
+                !Gaussian4DSplatRenderer.coverageOnlyCameras.Contains(cam) && OffscreenPass.s_LastFrame != Time.frameCount)
+            {
+                OffscreenPass.s_LastFrame = Time.frameCount;
+                renderer.EnqueuePass(m_Offscreen);
+            }
             renderer.EnqueuePass(m_Pass);
         }
 
