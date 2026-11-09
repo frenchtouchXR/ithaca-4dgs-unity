@@ -105,7 +105,10 @@ Hello ITHACA in passthrough). Use an `ARGBHalf` target: coverage accumulates dir
 
 In single-pass stereo, the splats only write their color (the splat depth target is not used with their own
 depth buffer). The remaining cost on a Quest 3 is fill rate: the frame rate drops as the model fills more of the
-view.
+view. `Gaussian4DSplatRenderer.stereoResolutionScale` (0.1 to 1, default 1) draws the splats into a smaller image
+than the eye's, upscaled with bilinear filtering at composite time (premultiplied color): fewer pixels to fill,
+a softer model; the rest of the scene stays at full resolution. No effect outside single-pass stereo. The ITHACA
+Quest application exposes it as a « Gaussian quality » slider (10 % to 100 %).
 
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.

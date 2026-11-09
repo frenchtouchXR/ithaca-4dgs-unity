@@ -318,6 +318,12 @@ namespace GaussianSplatting4D.Runtime
         }
         public static readonly System.Collections.Generic.List<OffscreenView> offscreenViews = new();
 
+        // Casque (deux yeux en une passe) : taille de l'image des gaussiennes par rapport a celle de l'oeil (1 = meme
+        // taille). En dessous, les gaussiennes sont dessinees dans une image plus petite puis agrandies avec lissage a la
+        // composition : moins de pixels a remplir (le Quest 3 ralentit avec la place du modele a l'ecran), modele un peu
+        // plus doux. Sans effet hors casque.
+        public static float stereoResolutionScale = 1f;
+
         // cameras qui n'ont besoin que de la couverture (alpha) des gaussiennes, par exemple la silhouette d'une ombre :
         // dessinees sans tri. L'alpha accumule (1 - produit des 1 - a) ne depend pas de l'ordre, seule la couleur en
         // depend : meme silhouette, sans le tri par camera.

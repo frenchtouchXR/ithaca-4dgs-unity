@@ -33,6 +33,9 @@ v2f vert (uint vtxID : SV_VertexID)
 }
 
 Texture2D _Gaussian4DSplatRT;
+SamplerState sampler_linear_clamp;
+float _Gaussian4DSplatScale;       // < 1 : image des gaussiennes reduite (casque), agrandie ici avec lissage
+float4 _Gaussian4DCompositeSize;   // taille de la cible de composition (oeil), pour l'image reduite
 float _CompositeGamma;   // 1 : melange sRGB (Gaussian4DSplatRenderer.m_SRGBBlending) ; 0 : melange lineaire d'origine
 float _Gaussian4DEyeIndex;   // oeil compose (deux yeux en une passe), -1 sinon
 float _Gaussian4DEyeDebug;   // diagnostic : 1 = oeil gauche teinte en rouge, oeil droit en bleu
@@ -49,7 +52,16 @@ float4 frag (v2f i) : SV_Target
         _Gaussian4DSplatRT.GetDimensions(w, h);
         px.y = (int)h - 1 - px.y;
     }
-    float4 col = _Gaussian4DSplatRT.Load(int3(px, 0));
+    float4 col;
+    if (_Gaussian4DSplatScale > 0 && _Gaussian4DSplatScale < 0.999)
+    {
+        // couleur premultipliee : l'interpolation bilineaire reste juste
+        float2 uv = i.vertex.xy / _Gaussian4DCompositeSize.xy;
+        if (_Gaussian4DCompositeFlipY > 0.5) uv.y = 1 - uv.y;
+        col = _Gaussian4DSplatRT.SampleLevel(sampler_linear_clamp, uv, 0);
+    }
+    else
+        col = _Gaussian4DSplatRT.Load(int3(px, 0));
     if (any(isnan(col)) || any(isinf(col)) || col.a <= 0) discard;
     col = max(col, 0);
     col.a = min(col.a, 1);

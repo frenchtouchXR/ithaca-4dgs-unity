@@ -48,7 +48,11 @@ namespace GaussianSplatting4D.Runtime
                 internal TextureHandle OwnDepth;
                 internal Vector4 TargetSize;
                 internal bool UseOwnDepth;
+                internal float SplatScale;
+                internal Vector2 EyeSize;
             }
+            static readonly int s_SplatScale = Shader.PropertyToID("_Gaussian4DSplatScale");
+            static readonly int s_CompositeSize = Shader.PropertyToID("_Gaussian4DCompositeSize");
             static readonly System.Collections.Generic.List<Material> s_GroupComposites = new();
             class DepthPassData
             {
@@ -70,6 +74,10 @@ namespace GaussianSplatting4D.Runtime
                 RenderTextureDescriptor rtDesc = cameraData.cameraTargetDescriptor;
                 rtDesc.depthBufferBits = 0;
                 if (stereo) { rtDesc.dimension = TextureDimension.Tex2D; rtDesc.volumeDepth = 1; rtDesc.vrUsage = VRTextureUsage.None; }
+                // casque : image des gaussiennes reduite (Gaussian4DSplatRenderer.stereoResolutionScale)
+                var tailleOeil = new Vector2(rtDesc.width, rtDesc.height);
+                float echelle = stereo ? Mathf.Clamp(Gaussian4DSplatRenderer.stereoResolutionScale, 0.1f, 1f) : 1f;
+                if (echelle < 0.999f) { rtDesc.width = Mathf.Max(1, Mathf.RoundToInt(rtDesc.width * echelle)); rtDesc.height = Mathf.Max(1, Mathf.RoundToInt(rtDesc.height * echelle)); }
                 rtDesc.msaaSamples = 1;
                 rtDesc.graphicsFormat = GraphicsFormat.R16G16B16A16_SFloat;
                 var textureHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, rtDesc, Gaussian4DSplatRTName, true);
@@ -78,7 +86,7 @@ namespace GaussianSplatting4D.Runtime
                 depthRtDesc.depthBufferBits = 0;
                 depthRtDesc.msaaSamples = 1;
                 depthRtDesc.graphicsFormat = GraphicsFormat.R16_SFloat;
-                if (stereo) { depthRtDesc.dimension = TextureDimension.Tex2D; depthRtDesc.volumeDepth = 1; depthRtDesc.vrUsage = VRTextureUsage.None; }
+                if (stereo) { depthRtDesc.dimension = TextureDimension.Tex2D; depthRtDesc.volumeDepth = 1; depthRtDesc.vrUsage = VRTextureUsage.None; depthRtDesc.width = rtDesc.width; depthRtDesc.height = rtDesc.height; }
                 var depthRtHandle = UniversalRenderer.CreateRenderGraphTexture(renderGraph, depthRtDesc, Gaussian4DSplatDepthRTName, true);
 
                 var activeColor = resourceData.activeColorTexture;
@@ -118,7 +126,10 @@ namespace GaussianSplatting4D.Runtime
                                                            screenSize = new Vector2(rtDesc.width, rtDesc.height) };
                     }
                     passData.CompositeFlipY = compositeFlipY;
-                    passData.TargetSize = Vector4.zero;   // _ScreenParams dans le shader, comme avant
+                    // _ScreenParams dans le shader, comme avant ; image reduite : sa taille
+                    passData.TargetSize = echelle < 0.999f ? new Vector4(rtDesc.width, rtDesc.height, 0, 0) : Vector4.zero;
+                    passData.SplatScale = echelle;
+                    passData.EyeSize = tailleOeil;
                     Gaussian4DSplatRenderer.lastPassInfo = $"{(stereo ? "deux yeux" : "une vue")} · camera {cameraData.cameraTargetDescriptor.width}x{cameraData.cameraTargetDescriptor.height} · " +
                         $"cible {(resourceData.isActiveTargetBackBuffer ? "finale" : "intermediaire")} · ecran {cameraData.camera.pixelWidth}x{cameraData.camera.pixelHeight} · " +
                         $"oeil {UnityEngine.XR.XRSettings.eyeTextureWidth}x{UnityEngine.XR.XRSettings.eyeTextureHeight} · retournement {compositeFlipY}";
@@ -140,6 +151,8 @@ namespace GaussianSplatting4D.Runtime
                         commandBuffer.SetGlobalFloat(s_CompositeFlipY, data.CompositeFlipY ? 1f : 0f);
                         commandBuffer.SetGlobalVector(s_TargetSize, data.TargetSize);
                         commandBuffer.SetGlobalFloat(s_EyeIndex, -1);
+                        commandBuffer.SetGlobalFloat(s_SplatScale, data.SplatScale);
+                        commandBuffer.SetGlobalVector(s_CompositeSize, new Vector4(data.EyeSize.x, data.EyeSize.y, 0, 0));
                         if (data.Stereo)
                         {
                             RenderStereo(data, commandBuffer);
