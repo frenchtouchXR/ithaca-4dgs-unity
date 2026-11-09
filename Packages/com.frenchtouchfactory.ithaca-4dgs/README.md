@@ -92,6 +92,11 @@ features, disable HDR and keep the Intermediate Texture at « Always ». A shade
 `_Gaussian4DEyeDebug = 1`, tints the splats red in the left eye and blue in the right eye (stereo check), and
 `Gaussian4DSplatRenderer.lastPassInfo` describes the last 4D pass (views, sizes, target, flip).
 
+Cameras that only need the splats' coverage, such as a top-down camera rendering a ground shadow silhouette, can
+be added to `Gaussian4DSplatRenderer.coverageOnlyCameras`: their splats are drawn without sorting. The accumulated
+alpha does not depend on the drawing order (only the color does), so the silhouette is the same, without a second
+sort of every splat each frame.
+
 A FreeTimeGS file holding a single sequence of a take (as the ITHACA platform delivers them for headsets)
 plays and loops over that sequence only.
 

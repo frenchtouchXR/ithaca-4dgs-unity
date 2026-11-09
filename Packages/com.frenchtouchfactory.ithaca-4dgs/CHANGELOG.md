@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the cadrage, as the ITHACA viewer), `modelRadius`; with a cadrage, the floor is y = 0 of the framed
   scene and its origin is the placement point (feet were estimated from the robust bounds, which sank models
   whose point cloud goes under the feet).
+- `Gaussian4DSplatRenderer.coverageOnlyCameras`: cameras drawn without sorting the splats, for alpha-only uses
+  such as a ground shadow silhouette (same alpha, one sort per frame saved).
 - Diagnostics: `_Gaussian4DEyeDebug` (left eye red, right eye blue) and `Gaussian4DSplatRenderer.lastPassInfo`.
 
 ### Changed

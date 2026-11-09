@@ -186,7 +186,7 @@ namespace GaussianSplatting4D.Runtime
 
                 // sort
                 var matrix = gs.transform.localToWorldMatrix;
-                if (sort)
+                if (sort && !Gaussian4DSplatRenderer.coverageOnlyCameras.Contains(cam))
                 {
                     if (gs.m_FrameCounter % gs.m_SortNthFrame == 0)
                         gs.SortPoints(cmb, cam, matrix);
@@ -299,6 +299,11 @@ namespace GaussianSplatting4D.Runtime
     {
         // derniere passe URP 4D (diagnostic) : vue(s), tailles, cible, retournement
         public static string lastPassInfo = "";
+
+        // cameras qui n'ont besoin que de la couverture (alpha) des gaussiennes, par exemple la silhouette d'une ombre :
+        // dessinees sans tri. L'alpha accumule (1 - produit des 1 - a) ne depend pas de l'ordre, seule la couleur en
+        // depend : meme silhouette, sans le tri par camera.
+        public static readonly System.Collections.Generic.HashSet<Camera> coverageOnlyCameras = new();
         public enum RenderMode
         {
             Splats,
