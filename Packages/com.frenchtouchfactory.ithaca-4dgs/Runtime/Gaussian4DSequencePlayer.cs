@@ -81,6 +81,8 @@ namespace GaussianSplatting4D.Runtime
         public string userAgent = "ITHACA-4DGS-Unity/1.0";
         [Tooltip("Garder les sequences telechargees apres la lecture (sinon cache vide a la fermeture du rendu : rien ne reste sur l'appareil)")]
         public bool keepDownloads = false;
+        [Tooltip("Rendus ITHACA (repere direct) : retournement sur X pour qu'ils ne soient pas vus en miroir dans Unity")]
+        public bool mirrorX = true;
         [Tooltip("Secondes avant sa premiere image ou la sequence suivante est activee (envoi au GPU)")]
         public float activateAhead = 1.0f;
 
@@ -214,6 +216,10 @@ namespace GaussianSplatting4D.Runtime
             }
             m_Scene = new GameObject("Scene").transform;
             m_Scene.SetParent(transform, false);
+            // repere des rendus ITHACA : direct (comme la visionneuse web, OpenCV) ; Unity est indirect : lues telles
+            // quelles, les coordonnees donnent l'image en miroir (main levee du mauvais cote). Retournement sur X : avec
+            // celui du changement de repere, une simple rotation ; l'avant du modele reste −z (pose face a l'utilisateur)
+            if (mirrorX) m_Scene.localScale = new Vector3(-1, 1, 1);
             m_Cadre = new GameObject("Cadrage").transform;
             m_Cadre.SetParent(m_Scene, false);
             var boite = rendu.cadrage?.boite;
@@ -450,9 +456,9 @@ namespace GaussianSplatting4D.Runtime
             for (int i = 0; i < 8; ++i)
             {
                 var p = new Vector3((i & 1) != 0 ? smax.x : smin.x, (i & 2) != 0 ? smax.y : smin.y, (i & 4) != 0 ? smax.z : smin.z);
-                bas = Mathf.Min(bas, (q * p).y);
+                bas = Mathf.Min(bas, (q * Vector3.Scale(m_Scene.localScale, p)).y);      // retournement sur X compris
             }
-            Vector3 centre = q * ((smin + smax) * 0.5f);
+            Vector3 centre = q * Vector3.Scale(m_Scene.localScale, (smin + smax) * 0.5f);
             var decalage = new Vector3(centerOnOrigin ? -centre.x : 0, feetOnFloor ? -bas : 0, centerOnOrigin ? -centre.z : 0);
             m_Scene.localPosition = Quaternion.Inverse(q) * decalage;
             Debug.Log($"[Gaussian4DSequencePlayer] cadrage : boite {smin} - {smax}, bas {bas}, centre {centre}, scene {m_Scene.localPosition}");

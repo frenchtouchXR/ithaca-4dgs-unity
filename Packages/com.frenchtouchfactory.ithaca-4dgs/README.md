@@ -137,7 +137,10 @@ of the ITHACA platform (`total`, `fps`, `sequences` with `url`, `premiere`, `ima
 `cadrage`). URLs may be `http(s)` links or local paths. Each sequence is downloaded into the application's
 temporary cache, prepared on a background thread while the previous one plays, and shown in one of two slots
 (the current sequence and the next one, uploaded to the GPU shortly before its first frame and drawn from that
-frame on: until then it is `suspended`, neither sorted nor drawn). The sound leads:
+frame on: until then it is `suspended`, neither sorted nor drawn). ITHACA renders use a right-handed frame (as the
+platform's web viewer); Unity is left-handed, so read as is they would show mirrored (a raised right hand on the
+wrong side). `mirrorX` (on by default) flips the scene on X: combined with the change of handedness this is a plain
+rotation, the model reads the right way round and its front stays −z. The sound leads:
 all tracks start together on the audio clock, offset by `decalage_son`, and the splats follow; if the next
 sequence is not ready in time, picture and sound wait. Unity reads mp3, ogg and wav (not m4a on Android): the
 platform provides an Ogg Vorbis copy of every track (`sons_ogg`).

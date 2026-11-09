@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (farthest group first); with a single mode in the scene there is one composite pass, as before.
 
 ### Fixed
+- `Gaussian4DSequencePlayer`: ITHACA renders were shown mirrored left-right (right-handed data read in Unity's
+  left-handed frame). New `mirrorX` (on by default) flips the scene on X; feet and centre estimation without a
+  cadrage take the flip into account.
 - `Gaussian4DSequencePlayer`: the next sequence, uploaded ahead, was also drawn (sorted and rasterized while
   invisible outside its window) until it became current; for a two-sequence render looping, both were drawn all
   the time (Quest 3: 36 fps instead of 72 for Hello ITHACA). It is now `suspended` until its first frame.
