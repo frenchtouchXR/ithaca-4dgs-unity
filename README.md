@@ -74,6 +74,9 @@ The archive includes `Coucou40Deg_HD.ply`, a higher-quality 4D take (replacing t
 Coucou40deg example): create its asset like any other PLY (its temporal type is detected
 automatically), then assign it to a `Gaussian4DSplatRenderer` with a `Gaussian4DPlayer`.
 
+More 4D examples to download: the [ITHACA Featured 4DGS gallery](https://www.ithaca.eu/featured-4dgs/)
+(download button on each video; `.ftgsz` files import directly, see below).
+
 Extract the archive's PLY files into `Assets/GS_scenes/` at the root of the project (create
 the folder if needed), then generate the corresponding GaussianSplat assets yourself using
 `Tools > Gaussian Splats > Create GaussianSplatAsset` (see below) before opening the sample scene.
