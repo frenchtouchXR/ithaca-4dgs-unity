@@ -29,6 +29,12 @@ namespace GaussianSplatting4D.Runtime
             public string format;
             public int premiere;     // premiere image de la sequence dans le rendu
             public int images;       // nombre d'images
+            public long offset;      // .4dgs : plage d'octets de la sequence dans le fichier url (octets > 0)
+            public long octets;
+            // transition entre sequences (12/11/2026, rendus avec recouvrement) : images sur lesquelles la sequence a ete
+            // entrainee, cœur compris ; trainImages = 0 : sans transition (coupure nette, comme avant)
+            public int trainPremiere;
+            public int trainImages;
         }
 
         // cadrage du rendu, regle sur le site : x -> e R (x - pivot) + pivot + position, R = Rz Ry Rx (degres) ; pivot =
@@ -64,7 +70,22 @@ namespace GaussianSplatting4D.Runtime
             public float decalage_son;   // secondes de son avant la premiere image du rendu
             public SequenceInfo[] sequences;
             public Cadrage cadrage;
+            public Fichier fichier;      // rendu en un seul fichier .4dgs (sans liste de sequences : ouvert par son index)
             [NonSerialized] public Trajectoire trajectoire;
+            [NonSerialized] public List<SonPlage> sonsPlage;   // .4dgs : pistes son, plages d'octets du fichier
+        }
+
+        [Serializable]
+        public class Fichier
+        {
+            public string url;           // lien http(s) ou chemin local
+            public string format;        // « 4dgs »
+        }
+
+        public class SonPlage
+        {
+            public string url, type;
+            public long offset, octets;
         }
 
         public enum State { Idle, Loading, Playing, Waiting, Error }
@@ -85,6 +106,8 @@ namespace GaussianSplatting4D.Runtime
         public bool mirrorX = true;
         [Tooltip("Secondes avant sa premiere image ou la sequence suivante est activee (envoi au GPU)")]
         public float activateAhead = 1.0f;
+        [Tooltip("Rendus avec transition (recouvrement des sequences) : fondu enchaine entre deux sequences voisines, comme la visionneuse du site ; sinon coupure nette")]
+        public bool crossfade = true;
 
         public State state { get; private set; } = State.Idle;
         public string status { get; private set; } = "";
@@ -107,9 +130,15 @@ namespace GaussianSplatting4D.Runtime
             public GaussianSplatAsset asset;
             public int seq = -1;
             public bool loading;
+            public float opacite;   // reglages du modele, multiplies par le poids du fondu
+            public int ordre;
         }
 
-        readonly Slot[] m_Slots = new Slot[2];
+        Slot[] m_Slots = new Slot[2];   // trois avec les transitions : precedente, en cours, suivante
+
+        // transition entre les sequences a et a + 1 : images debut..fin dessinees ensemble ; J = derniere image du cœur de a
+        class Zone { public int a, debut, fin, J; }
+        Zone[] m_Zones = Array.Empty<Zone>();
         Transform m_Scene;          // repere de la scene du site (pieds au sol) : cadrage et boite
         Transform m_Cadre;          // cadrage du rendu, parent des emplacements
         GaussianCutout m_Boite;
@@ -126,7 +155,100 @@ namespace GaussianSplatting4D.Runtime
             json = json.TrimStart('\uFEFF');
             var info = JsonUtility.FromJson<RenduInfo>(json);
             info.trajectoire = Trajectoire.Lire(json);
+            if ((info.sequences == null || info.sequences.Length == 0) && !string.IsNullOrEmpty(info.fichier?.url))
+            {
+                Open4dgs(info.fichier.url, info.titre);
+                return;
+            }
             Open(info);
+        }
+
+        // Video en un seul fichier .4dgs (lien http(s) ou chemin local) : index lu a la fin du fichier, puis sequences et
+        // son lus par plages d'octets au fil de la lecture (format : Utils/Format4dgs.cs)
+        public void Open4dgs(string url, string titre = null)
+        {
+            Close();
+            state = State.Loading;
+            status = "ouverture du fichier .4dgs…";
+            m_Ouverture = StartCoroutine(Ouvrir4dgs(url, titre));
+        }
+
+        Coroutine m_Ouverture;
+
+        IEnumerator Ouvrir4dgs(string url, string titre)
+        {
+            string json = null;
+            if (!IsRemote(url))
+            {
+                try { json = Utils.Format4dgs.LireIndexLocal(url.StartsWith("file:", StringComparison.OrdinalIgnoreCase) ? new Uri(url).LocalPath : url); }
+                catch (Exception e) { m_Ouverture = null; Fail(e.Message); yield break; }
+            }
+            else
+            {
+                // fin du fichier (Range suffixe) ; index plus long que la fin lue : demande a part
+                byte[] fin = null; long taille = 0;
+                using (var req = UnityWebRequest.Get(url))
+                {
+                    req.SetRequestHeader("Range", $"bytes=-{Utils.Format4dgs.Queue}");
+                    if (!string.IsNullOrEmpty(userAgent)) req.SetRequestHeader("User-Agent", userAgent);
+                    yield return req.SendWebRequest();
+                    if (req.result != UnityWebRequest.Result.Success) { m_Ouverture = null; Fail($".4dgs : {req.error}"); yield break; }
+                    fin = req.downloadHandler.data;
+                    var cr = req.GetResponseHeader("Content-Range");
+                    taille = req.responseCode == 206 && cr != null && cr.Contains("/") ? long.Parse(cr.Substring(cr.LastIndexOf('/') + 1)) : fin.Length;
+                }
+                if (!Utils.Format4dgs.LireFin(fin, taille, out long pos, out int lg)) { m_Ouverture = null; Fail(".4dgs illisible (fin du fichier)"); yield break; }
+                long base_ = taille - fin.Length;
+                if (pos >= base_) json = Encoding.UTF8.GetString(fin, (int)(pos - base_), lg);
+                else
+                    using (var req = UnityWebRequest.Get(url))
+                    {
+                        req.SetRequestHeader("Range", $"bytes={pos}-{pos + lg - 1}");
+                        if (!string.IsNullOrEmpty(userAgent)) req.SetRequestHeader("User-Agent", userAgent);
+                        yield return req.SendWebRequest();
+                        if (req.result != UnityWebRequest.Result.Success) { m_Ouverture = null; Fail($".4dgs : {req.error}"); yield break; }
+                        json = Encoding.UTF8.GetString(req.downloadHandler.data, 0, lg);
+                    }
+            }
+            Utils.Format4dgs.Index idx;
+            try { idx = Utils.Format4dgs.Analyser(json); }
+            catch (Exception e) { m_Ouverture = null; Fail(e.Message); yield break; }
+            var info = new RenduInfo
+            {
+                titre = string.IsNullOrEmpty(idx.titre) ? titre : idx.titre,
+                total = idx.images, fps = idx.fps > 0 ? idx.fps : 30, decalage_son = idx.decalage_son,
+                cadrage = idx.cadrage,
+                trajectoire = Trajectoire.Lire(json),
+                sequences = Array.ConvertAll(idx.sequences, b => new SequenceInfo { url = url, format = "ftgsz", premiere = b.premiere, images = b.images, offset = b.offset, octets = b.octets,
+                                                                                  trainPremiere = b.entrainement_images > 0 ? b.entrainement_premiere : b.premiere, trainImages = b.entrainement_images }),
+                sonsPlage = new List<SonPlage>(),
+            };
+            // une piste par nom ; parmi ses copies (m4a, Ogg…), celle que Unity lit partout (Ogg d'abord)
+            var parNom = new Dictionary<string, Utils.Format4dgs.Bloc>();
+            foreach (var b in idx.sons ?? Array.Empty<Utils.Format4dgs.Bloc>())
+                if (!parNom.TryGetValue(b.nom ?? "", out var deja) || Utils.Format4dgs.RangSon(b.type) < Utils.Format4dgs.RangSon(deja.type)) parNom[b.nom ?? ""] = b;
+            foreach (var b in parNom.Values) info.sonsPlage.Add(new SonPlage { url = url, type = b.type, offset = b.offset, octets = b.octets });
+            m_Ouverture = null;
+            Open(info);
+        }
+
+        // Plage d'octets [offset, offset + octets) d'un fichier (lien ou chemin) copiee dans chemin (cache)
+        IEnumerator Extraire(string url, long offset, long octets, string chemin, Action<string> erreur)
+        {
+            if (!IsRemote(url))
+            {
+                try { Utils.Format4dgs.ExtraireLocal(url.StartsWith("file:", StringComparison.OrdinalIgnoreCase) ? new Uri(url).LocalPath : url, offset, octets, chemin); }
+                catch (Exception e) { erreur(e.Message); }
+                yield break;
+            }
+            using var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbGET) { downloadHandler = new DownloadHandlerFile(chemin + ".part") { removeFileOnAbort = true } };
+            req.SetRequestHeader("Range", $"bytes={offset}-{offset + octets - 1}");
+            if (!string.IsNullOrEmpty(userAgent)) req.SetRequestHeader("User-Agent", userAgent);
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success) { erreur(req.error); yield break; }
+            if (req.responseCode != 206) { TryDelete(chemin + ".part"); erreur("le serveur ne lit pas les plages d'octets (Range)"); yield break; }
+            if (File.Exists(chemin)) File.Delete(chemin);
+            File.Move(chemin + ".part", chemin);
         }
 
         // trajectoire des effets de scene de la plateforme (effets.trajectoire, comme lecteur4d.js) : deplacement rendu
@@ -185,6 +307,7 @@ namespace GaussianSplatting4D.Runtime
 
         public void Close()
         {
+            if (m_Ouverture != null) { StopCoroutine(m_Ouverture); m_Ouverture = null; }
             if (m_Run != null) StopCoroutine(m_Run);
             m_Run = null;
             foreach (var a in m_Audio) if (a) { a.Stop(); Destroy(a.clip); Destroy(a.gameObject); }
@@ -234,6 +357,18 @@ namespace GaussianSplatting4D.Runtime
                 m_Boite.transform.localScale = Abs(V3(boite.demi, Vector3.one));     // cube unite [-1, 1] -> demi-cotes
             }
             m_Cadree = false;
+            // transitions : zones de fondu entre sequences voisines (toutes les sequences avec leurs images d'entrainement)
+            var sq = rendu.sequences;
+            bool fondu = crossfade && sq.Length > 1 && Array.TrueForAll(sq, x => x.trainImages > 0);
+            var zones = new List<Zone>();
+            if (fondu)
+                for (int a = 0; a + 1 < sq.Length; ++a)
+                {
+                    var z = new Zone { a = a, debut = sq[a + 1].trainPremiere, fin = sq[a].trainPremiere + sq[a].trainImages - 1, J = sq[a].premiere + sq[a].images - 1 };
+                    if (z.fin >= z.debut) zones.Add(z);
+                }
+            m_Zones = zones.ToArray();
+            m_Slots = new Slot[m_Zones.Length > 0 ? 3 : 2];
             for (int i = 0; i < m_Slots.Length; ++i)
             {
                 var go = Instantiate(template.gameObject, m_Cadre, false);
@@ -248,12 +383,30 @@ namespace GaussianSplatting4D.Runtime
                 pl.loop = false;
                 pl.temporalDataAsset = null;
                 m_Slots[i] = new Slot { go = go, renderer = go.GetComponent<Gaussian4DSplatRenderer>(), player = pl };
+                m_Slots[i].opacite = m_Slots[i].renderer.m_OpacityScale;
+                m_Slots[i].ordre = m_Slots[i].renderer.m_RenderOrder;
                 m_Slots[i].renderer.m_Asset = null;
                 m_Slots[i].renderer.m_Cutouts = m_Boite ? new[] { m_Boite } : null;
             }
 
             // son : toutes les pistes entierement chargees avant la lecture (un decodage au fil de l'eau decale le son)
             var pistes = rendu.sons_ogg != null && rendu.sons_ogg.Length > 0 ? rendu.sons_ogg : rendu.sons;
+            if (rendu.sonsPlage != null && rendu.sonsPlage.Count > 0)
+            {
+                // .4dgs : chaque piste extraite dans le cache, puis lue comme un fichier local
+                var locales = new List<string>();
+                foreach (var sp in rendu.sonsPlage)
+                {
+                    status = "son…";
+                    string chemin = CachePath(sp.url.Split('?')[0] + "_" + sp.offset) + Utils.Format4dgs.ExtensionSon(sp.type);
+                    string err = null;
+                    if (!File.Exists(chemin)) yield return Extraire(sp.url, sp.offset, sp.octets, chemin, e => err = e);
+                    if (err != null) { Debug.LogWarning($"[Gaussian4DSequencePlayer] son du .4dgs illisible : {err}"); continue; }
+                    m_Downloaded.Add(chemin);
+                    locales.Add(chemin);
+                }
+                pistes = locales.ToArray();
+            }
             if (pistes != null)
                 foreach (var url in pistes)
                 {
@@ -313,10 +466,20 @@ namespace GaussianSplatting4D.Runtime
                 }
                 else if (slotNext != null && !slotNext.loading && !slotNext.go.activeSelf && next != cur)
                 {
-                    float avant = (rendu.sequences[next].premiere - currentFrame) / rendu.fps;
+                    float avant = (Visible(next) - currentFrame) / rendu.fps;
                     if (avant < 0) avant += Duration;
                     if (avant <= activateAhead) Activate(slotNext);
                 }
+
+                // transition : dans la zone de deux sequences voisines, les deux sont dessinees, chacune avec son poids
+                // (image entamee, comme le site) ; l'autre sequence est activee si elle ne l'est pas encore
+                var zone = ZoneAt((int)currentFrame);
+                if (zone != null)
+                    foreach (int k in new[] { zone.a, zone.a + 1 })
+                    {
+                        var sk = SlotFor(k);
+                        if (sk != null && !sk.loading && !sk.go.activeSelf) Activate(sk);
+                    }
 
                 // temps des modeles : temps normalise de la prise (image g a g / (total - 1)), comme le lecteur du site
                 float u = currentFrame / Mathf.Max(rendu.total - 1, 1);
@@ -327,10 +490,18 @@ namespace GaussianSplatting4D.Runtime
                         s.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
                         s.player.previewTime = u;
                         // seule la sequence en cours est dessinee ; la suivante attend sur le GPU (avant : dessinee
-                        // aussi, en permanence pour un rendu de deux sequences en boucle, deux fois plus de gaussiennes)
-                        s.renderer.suspended = s.seq != cur;
-                        // une sequence finie est retiree (sauf si c'est aussi la suivante, rendu a une sequence)
-                        if (s.seq != cur && s.seq != next) Deactivate(s);
+                        // aussi, en permanence pour un rendu de deux sequences en boucle, deux fois plus de gaussiennes) ;
+                        // dans une transition, les deux sequences de la zone
+                        bool dansZone = zone != null && (s.seq == zone.a || s.seq == zone.a + 1);
+                        s.renderer.suspended = s.seq != cur && !dansZone;
+                        // poids du fondu : la sequence qui apparait ou s'efface est dessinee devant l'autre (pleine),
+                        // d'ou un fondu enchaine ; hors transition, reglages du modele
+                        float w = dansZone ? Poids(zone, (int)currentFrame, s.seq == zone.a) : 1f;
+                        s.renderer.m_OpacityScale = s.opacite * w;
+                        s.renderer.m_RenderOrder = s.ordre + (w < 1f ? 1 : 0);
+                        // une sequence finie est retiree (sauf si c'est aussi la suivante, rendu a une sequence, ou si
+                        // elle est encore dans une transition)
+                        if (s.seq != cur && s.seq != next && !dansZone) Deactivate(s);
                     }
                 status = $"sequence {cur + 1}/{rendu.sequences.Length} · image {(int)currentFrame}/{rendu.total}";
                 yield return null;
@@ -343,6 +514,28 @@ namespace GaussianSplatting4D.Runtime
             for (int i = seqs.Length - 1; i >= 0; --i)
                 if (frame >= seqs[i].premiere) return i;
             return 0;
+        }
+
+        // premiere image ou la sequence est dessinee : debut de sa transition d'entree, sinon son cœur
+        int Visible(int i)
+        {
+            var s = rendu.sequences[i];
+            return m_Zones.Length > 0 && i > 0 ? Mathf.Min(s.premiere, s.trainPremiere) : s.premiere;
+        }
+
+        Zone ZoneAt(int frame)
+        {
+            foreach (var z in m_Zones) if (frame >= z.debut && frame <= z.fin) return z;
+            return null;
+        }
+
+        // poids d'opacite a l'image f de la zone (meme loi que la visionneuse du site) : jusqu'a J, la suivante apparait
+        // (1/(n+1) … n/(n+1)) sur la precedente pleine ; apres J, la precedente s'efface sur la suivante pleine
+        static float Poids(Zone z, int f, bool precedente)
+        {
+            int avant = z.J - z.debut + 1, apres = z.fin - z.J;
+            if (f <= z.J) return precedente ? 1f : (f - z.debut + 1f) / (avant + 1f);
+            return precedente ? 1f - (f - z.J) / (apres + 1f) : 1f;
         }
 
         int NextSequence(int i) => i + 1 < rendu.sequences.Length ? i + 1 : (loop ? 0 : i);
@@ -367,7 +560,20 @@ namespace GaussianSplatting4D.Runtime
             slot.seq = seq;
             var info = rendu.sequences[seq];
             string path = info.url;
-            if (IsRemote(info.url))
+            if (info.octets > 0)
+            {
+                // sequence d'un .4dgs : sa plage d'octets, ecrite dans le cache comme un .ftgsz
+                path = CachePath(info.url.Split('?')[0] + "_" + info.offset) + ".ftgsz";
+                if (!File.Exists(path))
+                {
+                    status = $"telechargement de la sequence {seq + 1}…";
+                    string err = null;
+                    yield return Extraire(info.url, info.offset, info.octets, path, e => err = e);
+                    if (err != null) { Fail($"sequence {seq + 1} : {err}"); slot.loading = false; yield break; }
+                    m_Downloaded.Add(path);
+                }
+            }
+            else if (IsRemote(info.url))
             {
                 path = CachePath(info.url);
                 if (!File.Exists(path))
@@ -386,9 +592,27 @@ namespace GaussianSplatting4D.Runtime
             while (!task.IsCompleted) yield return null;
             if (task.IsFaulted) { Fail($"sequence {seq + 1} : {task.Exception?.GetBaseException().Message}"); slot.loading = false; yield break; }
             lastPrepareSeconds = (float)chrono.Elapsed.TotalSeconds;
+            if (m_Zones.Length > 0) ElargirFenetre(task.Result, info);
             slot.asset = GaussianSplatRuntimeLoader.CreateAsset(task.Result);
             if (!m_Cadree) { ApplyCadrage(task.Result.robustMin, task.Result.robustMax); m_Cadree = true; }
             slot.loading = false;
+        }
+
+        // transition : chaque gaussienne porte la fenetre du cœur de sa sequence (seg_start / seg_end) ; elle est elargie
+        // aux images d'entrainement pour que la sequence reste visible pendant ses transitions (meme marge que
+        // GaussianSplatAssetBuilder : de f - 1 % a f + 99 % de frame)
+        void ElargirFenetre(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info)
+        {
+            if (info.trainImages <= 0 || p.temporal == null || p.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS) return;
+            int n = p.temporalFrames > 1 ? p.temporalFrames : rendu.total;
+            float frame = 1f / Mathf.Max(n - 1, 1);
+            float a = info.trainPremiere * frame - 0.01f * frame, b = (info.trainPremiere + info.trainImages - 1) * frame + 0.99f * frame;
+            var ba = BitConverter.GetBytes(a); var bb = BitConverter.GetBytes(b);
+            for (int i = 0; i + 32 <= p.temporal.Length; i += 32)
+            {
+                Buffer.BlockCopy(ba, 0, p.temporal, i + 20, 4);
+                Buffer.BlockCopy(bb, 0, p.temporal, i + 24, 4);
+            }
         }
 
         void Activate(Slot s)
@@ -409,7 +633,7 @@ namespace GaussianSplatting4D.Runtime
 
         static void FreeSlot(Slot s)
         {
-            if (s.go) { s.go.SetActive(false); s.renderer.m_Asset = null; }
+            if (s.go) { s.go.SetActive(false); s.renderer.m_Asset = null; s.renderer.m_OpacityScale = s.opacite; s.renderer.m_RenderOrder = s.ordre; }
             GaussianSplatRuntimeLoader.DestroyAsset(s.asset);
             s.asset = null;
             s.seq = -1;

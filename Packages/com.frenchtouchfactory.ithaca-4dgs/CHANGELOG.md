@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Gaussian4DSequencePlayer`: crossfade between sequences for ITHACA renders made with a transition (overlapping
+  sequences: `trainPremiere` / `trainImages` in the share JSON, `entrainement_premiere` / `entrainement_images` in
+  the .4dgs index). In a transition both sequences are drawn, the one fading in or out in front with its opacity
+  weight (`m_OpacityScale`, `m_RenderOrder`), their gaussians' time window widened to their training frames;
+  three slots instead of two. `crossfade = false`, or renders without transition: hard cut as before.
+- `Gaussian4DSequencePlayer.Open4dgs` and `Utils/Format4dgs`: ITHACA .4dgs single-file videos (index at the end
+  of the file, sequences and sound read as byte ranges); a share JSON with a `fichier` (.4dgs) opens it.
 - Loading while the application runs: `GaussianSplatRuntimeLoader` builds a `GaussianSplatAsset` from a
   `.ftgsz`, `.ply` or `.spz` file (VeryHigh, High and Medium qualities), on a background thread
   (`PrepareAsync`) then on the main thread (`CreateAsset`).
