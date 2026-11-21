@@ -625,7 +625,8 @@ namespace GaussianSplatting4D.Runtime
             if (p.temporal == null || rendu.total < 2) return;
             int stride = GaussianSplatAsset.kTemporalStrideTrigs;
             float frame = 1f / (rendu.total - 1);
-            float u0 = info.premiere * frame;
+            // transition (21/11/2026) : temps du modele compte depuis la premiere image d'ENTRAINEMENT
+            float u0 = (info.trainImages > 0 ? info.trainPremiere : info.premiere) * frame;
             float a = info.premiere * frame - 0.01f * frame, b = (info.premiere + info.images - 1) * frame + 0.99f * frame;
             for (int i = 0; i + stride <= p.temporal.Length; i += stride)
             {
