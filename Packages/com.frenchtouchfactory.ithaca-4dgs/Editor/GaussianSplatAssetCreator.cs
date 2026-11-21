@@ -84,7 +84,7 @@ namespace GaussianSplatting4D.Editor
             EditorGUILayout.Space();
             GUILayout.Label("Input data", EditorStyles.boldLabel);
             var rect = EditorGUILayout.GetControlRect(true);
-            m_InputFile = m_FilePicker.PathFieldGUI(rect, new GUIContent("Input PLY/SPZ/FTGSZ File"), m_InputFile, "ply,spz,ftgsz", "PointCloudFile");
+            m_InputFile = m_FilePicker.PathFieldGUI(rect, new GUIContent("Input PLY/SPZ/FTGSZ/TRGZ File"), m_InputFile, "ply,spz,ftgsz,trgz", "PointCloudFile");
             m_ImportCameras = EditorGUILayout.Toggle("Import Cameras", m_ImportCameras);
 
             if (m_InputFile != m_PrevFilePath && !string.IsNullOrWhiteSpace(m_InputFile))
