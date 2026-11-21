@@ -111,6 +111,7 @@ namespace GaussianSplatting4D.Editor
                 EditorGUILayout.LabelField("Type", m_PrevTemporalKind switch
                 {
                     TemporalKind.FreeTimeGS => "4D FreeTimeGS (.ftgs.ply)",
+                    TemporalKind.Trigs => "HD 4DGS (.trgz)",
                     TemporalKind.FourC4D => "4D 4C4D",
                     _ => "3DGS (static)"
                 });
@@ -317,7 +318,13 @@ namespace GaussianSplatting4D.Editor
             // fait exploser numeriquement la covariance temporelle (gaussiennes regroupees en boule
             // chaotique) -- reproductible uniquement sur les presets utilisant des chunks, jamais sur
             // VeryHigh (qui ne chunke pas, cf. isUsingChunks).
-            if (m_TemporalKind == TemporalKind.FreeTimeGS)
+            if (m_TemporalKind == TemporalKind.Trigs)              // HD 4DGS (.trgz)
+            {
+                using (var fs = new FileStream(pathTemporal, FileMode.Create, FileAccess.Write))
+                    GaussianSplatAssetBuilder.CreateTemporalDataTrigs(inputSplats, fs, ref dataHash, m_FtgsInfo);
+                asset.SetTemporalInfo(GaussianSplatAsset.TemporalFormat.Trigs, m_FtgsInfo.nFrames, 0, 1);
+            }
+            else if (m_TemporalKind == TemporalKind.FreeTimeGS)
             {
                 using (var fs = new FileStream(pathTemporal, FileMode.Create, FileAccess.Write))
                     GaussianSplatAssetBuilder.CreateTemporalDataFTGS(inputSplats, fs, ref dataHash, m_FtgsInfo);

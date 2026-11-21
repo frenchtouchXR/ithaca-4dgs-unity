@@ -62,7 +62,7 @@ namespace GaussianSplatting4D.Runtime
         void ApplyAssetTiming()
         {
             var asset = m_Renderer != null ? m_Renderer.m_Asset : null;
-            if (asset == null || asset.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS)
+            if (asset == null || !asset.normalizedTime)
                 return;
             duration = 1f;
             if (asset.temporalFrames > 1)
@@ -264,17 +264,18 @@ namespace GaussianSplatting4D.Runtime
             Buffer.BlockCopy(bytes, 0, uintData, 0, bytes.Length);
             m_GpuTemporalData.SetData(uintData);
             int nSplats = bytes.Length / TemporalStride;
-            bool ftgs = m_Renderer != null && m_Renderer.m_Asset != null && m_Renderer.m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS;
-            Debug.Log($"[Gaussian4DPlayer] {nSplats} splats ({(ftgs ? "FreeTimeGS" : "4C4D")})");
+            var fmt = m_Renderer != null && m_Renderer.m_Asset != null ? m_Renderer.m_Asset.temporalFormat : GaussianSplatAsset.TemporalFormat.Legacy4C4D;
+            bool ftgs = fmt == GaussianSplatAsset.TemporalFormat.FreeTimeGS, trigs = fmt == GaussianSplatAsset.TemporalFormat.Trigs;
+            Debug.Log($"[Gaussian4DPlayer] {nSplats} splats ({(trigs ? "HD 4DGS" : ftgs ? "FreeTimeGS" : "4C4D")})");
             m_PlayStart = 0f; m_PlayEnd = -1f;
-            if (ftgs && TemporalStride == 32 && nSplats > 0)
+            int stride = TemporalStride, ow = trigs ? 92 : 20;     // win_start / win_end : octets ow et ow + 4
+            if (((ftgs && stride == 32) || (trigs && stride == GaussianSplatAsset.kTemporalStrideTrigs)) && nSplats > 0)
             {
-                // win_start / win_end : floats 5 et 6 de chaque enregistrement (fenetre elargie d'une demi-frame)
                 float a = float.MaxValue, b = float.MinValue;
                 for (int i = 0; i < nSplats; i++)
                 {
-                    a = Mathf.Min(a, BitConverter.ToSingle(bytes, i * 32 + 20));
-                    b = Mathf.Max(b, BitConverter.ToSingle(bytes, i * 32 + 24));
+                    a = Mathf.Min(a, BitConverter.ToSingle(bytes, i * stride + ow));
+                    b = Mathf.Max(b, BitConverter.ToSingle(bytes, i * stride + ow + 4));
                 }
                 a = Mathf.Max(a, 0f); b = Mathf.Min(b, 1f);
                 if (b > a && (a > 0f || b < 1f)) { m_PlayStart = a; m_PlayEnd = b; Debug.Log($"[Gaussian4DPlayer] plage de lecture {a:0.####} - {b:0.####}"); }

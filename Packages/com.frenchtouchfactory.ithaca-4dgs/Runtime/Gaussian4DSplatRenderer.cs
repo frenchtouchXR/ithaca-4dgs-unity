@@ -388,7 +388,9 @@ namespace GaussianSplatting4D.Runtime
 
         // Format du buffer temporel pour Splat4DUtilities.compute (_TemporalMode) : 0 = 4C4D, 1 = FreeTimeGS.
         // Lu sur l'asset : les assets crees avant FreeTimeGS valent 0 (comportement inchange).
-        float TemporalMode => m_Asset != null && m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS ? 1f : 0f;
+        // 2 = HD 4DGS (.trgz, 21/11/2026)
+        float TemporalMode => m_Asset == null ? 0f : m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS ? 1f
+            : m_Asset.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs ? 2f : 0f;
         internal GraphicsBuffer m_GpuIndexBuffer;
 
         // these buffers are only for splat editing, and are lazily created

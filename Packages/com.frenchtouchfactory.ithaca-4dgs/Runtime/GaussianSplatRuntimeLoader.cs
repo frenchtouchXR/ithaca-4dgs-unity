@@ -90,7 +90,13 @@ namespace GaussianSplatting4D.Runtime
                 var hash = new Hash128((uint)splats.Length, (uint)GaussianSplatAsset.kCurrentVersion, 0, 0);
                 // donnees temporelles avant les morceaux (qui reecrivent les echelles en place), comme le createur
                 r.isTemporal = kind != TemporalKind.None;
-                if (kind == TemporalKind.FreeTimeGS)
+                if (kind == TemporalKind.Trigs)                           // HD 4DGS (.trgz)
+                {
+                    r.temporal = Emit(s => GaussianSplatAssetBuilder.CreateTemporalDataTrigs(splats, s, ref hash, ftgs));
+                    r.temporalFormat = GaussianSplatAsset.TemporalFormat.Trigs;
+                    r.temporalFrames = ftgs.nFrames; r.temporalFirstFrame = 0; r.temporalSegments = 1;
+                }
+                else if (kind == TemporalKind.FreeTimeGS)
                 {
                     r.temporal = Emit(s => GaussianSplatAssetBuilder.CreateTemporalDataFTGS(splats, s, ref hash, ftgs));
                     r.temporalFormat = GaussianSplatAsset.TemporalFormat.FreeTimeGS;
@@ -144,7 +150,7 @@ namespace GaussianSplatting4D.Runtime
             var asset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
             asset.name = p.name;
             asset.Initialize(p.splatCount, p.formatPos, p.formatScale, p.formatColor, p.formatSH, p.boundsMin, p.boundsMax, null);
-            if (p.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS)
+            if (p.temporalFormat == GaussianSplatAsset.TemporalFormat.FreeTimeGS || p.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs)
                 asset.SetTemporalInfo(p.temporalFormat, p.temporalFrames, p.temporalFirstFrame, p.temporalSegments);
             asset.SetDataHash(p.dataHash);
             asset.SetAssetFiles(Data(p.chunk, p.name + "_chk"), Data(p.pos, p.name + "_pos"), Data(p.other, p.name + "_oth"),

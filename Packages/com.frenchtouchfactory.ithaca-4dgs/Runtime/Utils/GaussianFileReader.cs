@@ -34,6 +34,11 @@ namespace GaussianSplatting4D.Runtime.Utils
         public float ftgs_log_duration;
         public Vector3 ftgs_velocity;
         public float ftgs_seg_start, ftgs_seg_end;
+        // HD 4DGS (.trgz) : temps central et log de sigma (secondes, temps du modele), ancre, points de controle de Bezier
+        // (translation t, rotation r)
+        public float trigs_mu, trigs_log_sigma;
+        public Vector3 trigs_anchor;
+        public Vector3 trigs_p0t, trigs_p0r, trigs_p1t, trigs_p1r, trigs_p2t, trigs_p2r;
     }
 
     // Variante temporelle d'un fichier d'entree, d'apres ses proprietes PLY
@@ -41,7 +46,8 @@ namespace GaussianSplatting4D.Runtime.Utils
     {
         None,       // 3DGS statique
         FourC4D,    // 4C4D / 4DGS : t, scale_t, rot_r_*
-        FreeTimeGS  // FreeTimeGS v1 : time, log_duration, velocity_* (+ seg_start/seg_end ITHACA)
+        FreeTimeGS, // FreeTimeGS v1 : time, log_duration, velocity_* (+ seg_start/seg_end ITHACA)
+        Trigs       // HD 4DGS (.trgz decode) : mu, log_sigma, anchor_*, p0_*..p2_*
     }
 
     // Informations FreeTimeGS lues dans l'en-tete (lignes comment)
@@ -53,6 +59,8 @@ namespace GaussianSplatting4D.Runtime.Utils
         public bool hasWindow;       // proprietes seg_start/seg_end presentes (assemble_ftgs.py)
         public int firstFrame;       // ithaca_first_frame
         public int segments;         // ithaca_segments
+        public float fpsModele;      // HD 4DGS : images par seconde du temps du modele
+        public float coupure;        // HD 4DGS : coupure douce de l'opacite temporelle
     }
 
     [BurstCompile]
@@ -105,7 +113,7 @@ namespace GaussianSplatting4D.Runtime.Utils
                 if (decode != null && FtgszFileReader.DeleteAfterRead)
                     File.Delete(decode);                                       // application : rien ne reste sur l'appareil
                 temporalKind = DetectTemporalKind(attributes);
-                if (temporalKind == TemporalKind.FreeTimeGS)
+                if (temporalKind == TemporalKind.FreeTimeGS || temporalKind == TemporalKind.Trigs)
                     ftgsInfo = ParseFtgsHeader(filePath, comments, attributes);
                 string attrError = CheckPLYAttributes(attributes);
                 if (!string.IsNullOrEmpty(attrError))
@@ -131,6 +139,8 @@ namespace GaussianSplatting4D.Runtime.Utils
 
         static TemporalKind DetectTemporalKind(List<(string, PLYFileReader.ElementType)> attributes)
         {
+            if (HasFloat(attributes, "mu") && HasFloat(attributes, "log_sigma") && HasFloat(attributes, "p0_0"))
+                return TemporalKind.Trigs;
             if (HasFloat(attributes, "time") && HasFloat(attributes, "log_duration") && HasFloat(attributes, "velocity_0"))
                 return TemporalKind.FreeTimeGS;
             if (HasFloat(attributes, "t") && HasFloat(attributes, "scale_t"))
@@ -152,6 +162,8 @@ namespace GaussianSplatting4D.Runtime.Utils
                 hasWindow = HasFloat(attributes, "seg_start") && HasFloat(attributes, "seg_end"),
                 firstFrame = int.Parse(Get("ithaca_first_frame", "0"), inv),
                 segments = int.Parse(Get("ithaca_segments", "1"), inv),
+                fpsModele = float.Parse(Get("fps_modele", "30"), inv),
+                coupure = float.Parse(Get("coupure", "0"), inv),
             };
         }
 
@@ -247,7 +259,10 @@ namespace GaussianSplatting4D.Runtime.Utils
                 "rot_r_3"
             ,
                 "rot_0", "rot_1", "rot_2", "rot_3",
-                "time", "log_duration", "velocity_0", "velocity_1", "velocity_2", "seg_start", "seg_end"
+                "time", "log_duration", "velocity_0", "velocity_1", "velocity_2", "seg_start", "seg_end",
+                "mu", "log_sigma", "anchor_0", "anchor_1", "anchor_2",
+                "p0_0", "p0_1", "p0_2", "p0_3", "p0_4", "p0_5", "p1_0", "p1_1", "p1_2", "p1_3", "p1_4", "p1_5",
+                "p2_0", "p2_1", "p2_2", "p2_3", "p2_4", "p2_5"
             };
             // Couleurs de degre < 3 (ex. FreeTimeGS assemble en degre 1 : f_rest_0..8) : le fichier range
             // les coefficients canal par canal (k par canal) ; on les replace aux emplacements du degre 3

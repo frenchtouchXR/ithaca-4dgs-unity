@@ -219,7 +219,7 @@ namespace GaussianSplatting4D.Runtime
                 total = idx.images, fps = idx.fps > 0 ? idx.fps : 30, decalage_son = idx.decalage_son,
                 cadrage = idx.cadrage,
                 trajectoire = Trajectoire.Lire(json),
-                sequences = Array.ConvertAll(idx.sequences, b => new SequenceInfo { url = url, format = "ftgsz", premiere = b.premiere, images = b.images, offset = b.offset, octets = b.octets,
+                sequences = Array.ConvertAll(idx.sequences, b => new SequenceInfo { url = url, format = b.encodage == "trgz1" ? "trgz" : "ftgsz", premiere = b.premiere, images = b.images, offset = b.offset, octets = b.octets,
                                                                                   trainPremiere = b.entrainement_images > 0 ? b.entrainement_premiere : b.premiere, trainImages = b.entrainement_images }),
                 sonsPlage = new List<SonPlage>(),
             };
@@ -563,7 +563,7 @@ namespace GaussianSplatting4D.Runtime
             if (info.octets > 0)
             {
                 // sequence d'un .4dgs : sa plage d'octets, ecrite dans le cache comme un .ftgsz
-                path = CachePath(info.url.Split('?')[0] + "_" + info.offset) + ".ftgsz";
+                path = CachePath(info.url.Split('?')[0] + "_" + info.offset) + (info.format == "trgz" ? ".trgz" : ".ftgsz");   // HD 4DGS : .trgz
                 if (!File.Exists(path))
                 {
                     status = $"telechargement de la sequence {seq + 1}…";
@@ -592,6 +592,7 @@ namespace GaussianSplatting4D.Runtime
             while (!task.IsCompleted) yield return null;
             if (task.IsFaulted) { Fail($"sequence {seq + 1} : {task.Exception?.GetBaseException().Message}"); slot.loading = false; yield break; }
             lastPrepareSeconds = (float)chrono.Elapsed.TotalSeconds;
+            if (task.Result.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs) RecalerTrigs(task.Result, info);
             if (m_Zones.Length > 0) ElargirFenetre(task.Result, info);
             slot.asset = GaussianSplatRuntimeLoader.CreateAsset(task.Result);
             if (!m_Cadree) { ApplyCadrage(task.Result.robustMin, task.Result.robustMax); m_Cadree = true; }
@@ -603,15 +604,37 @@ namespace GaussianSplatting4D.Runtime
         // GaussianSplatAssetBuilder : de f - 1 % a f + 99 % de frame)
         void ElargirFenetre(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info)
         {
-            if (info.trainImages <= 0 || p.temporal == null || p.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS) return;
-            int n = p.temporalFrames > 1 ? p.temporalFrames : rendu.total;
+            bool trigs = p.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs;
+            if (info.trainImages <= 0 || p.temporal == null || (p.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS && !trigs)) return;
+            int n = trigs ? rendu.total : p.temporalFrames > 1 ? p.temporalFrames : rendu.total;
             float frame = 1f / Mathf.Max(n - 1, 1);
             float a = info.trainPremiere * frame - 0.01f * frame, b = (info.trainPremiere + info.trainImages - 1) * frame + 0.99f * frame;
             var ba = BitConverter.GetBytes(a); var bb = BitConverter.GetBytes(b);
-            for (int i = 0; i + 32 <= p.temporal.Length; i += 32)
+            int stride = trigs ? GaussianSplatAsset.kTemporalStrideTrigs : 32, ow = trigs ? 92 : 20;
+            for (int i = 0; i + stride <= p.temporal.Length; i += stride)
             {
-                Buffer.BlockCopy(ba, 0, p.temporal, i + 20, 4);
-                Buffer.BlockCopy(bb, 0, p.temporal, i + 24, 4);
+                Buffer.BlockCopy(ba, 0, p.temporal, i + ow, 4);
+                Buffer.BlockCopy(bb, 0, p.temporal, i + ow + 4, 4);
+            }
+        }
+
+        // HD 4DGS (.trgz) : place de la sequence dans la video (premiere image, nombre d'images du rendu) ecrite dans
+        // chaque enregistrement (u0, tScale, fenetre) ; temps du modele = (temps video - u0) * tScale
+        void RecalerTrigs(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info)
+        {
+            if (p.temporal == null || rendu.total < 2) return;
+            int stride = GaussianSplatAsset.kTemporalStrideTrigs;
+            float frame = 1f / (rendu.total - 1);
+            float u0 = info.premiere * frame;
+            float a = info.premiere * frame - 0.01f * frame, b = (info.premiere + info.images - 1) * frame + 0.99f * frame;
+            for (int i = 0; i + stride <= p.temporal.Length; i += stride)
+            {
+                float fpsModele = (p.temporalFrames - 1) / Mathf.Max(BitConverter.ToSingle(p.temporal, i + 100), 1e-6f);
+                float tScale = (rendu.total - 1) / Mathf.Max(fpsModele, 1e-3f);
+                Buffer.BlockCopy(BitConverter.GetBytes(a), 0, p.temporal, i + 92, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(b), 0, p.temporal, i + 96, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(tScale), 0, p.temporal, i + 100, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(u0), 0, p.temporal, i + 108, 4);
             }
         }
 

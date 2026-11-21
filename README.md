@@ -144,6 +144,7 @@ mode that isolates the spherical-harmonics contribution and forces a grayscale r
 | Asset pipeline | `GaussianFileReader` and `GaussianSplatAssetCreator` read the extra temporal PLY attributes and emit a companion `*_tmp.bytes` file |
 | Velocity models | Import of velocity-based temporal PLY (velocity, temporal opacity, sequence window), stored in their own temporal layout; rendered by the same `Gaussian4DSplatRenderer` / `Gaussian4DPlayer` |
 | Compressed 4D | `.ftgsz` import (`FtgszFileReader`): decoded into an equivalent PLY, cached in `Library/Ftgsz/`, then imported as usual |
+| HD 4DGS | `.trgz` sequences (ITHACA, since 21/11/2026), alone or inside a `.4dgs`: same decoding, then `TemporalFormat.Trigs` — each gaussian keeps its own motion, a rigid screw motion (rotation + translation) whose rate follows a quadratic Bézier curve over its life, evaluated in `Splat4DUtilities.compute` (`_TemporalMode` = 2): centre **and** orientation change over time |
 | Streaming | `Gaussian4DSequencePlayer`: plays an ITHACA render while the application runs (share JSON or single-file `.4dgs`), sequence by sequence, with sound; renders made with a transition between sequences are crossfaded, the others cut as before |
 | Compositing | `sRGB Blending` option on `Gaussian4DSplatRenderer` (on by default, per object); the 3D `GaussianSplatRenderer` keeps the original compositing |
 | Namespacing | Everything lives under `GaussianSplatting4D.*` instead of `GaussianSplatting.*`, so both plugins can be installed side by side |

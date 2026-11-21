@@ -54,8 +54,16 @@ uint _SplatCount;
 RWStructuredBuffer<float3> _SplatPosDisplaced;
 float _PosDisplacedReady;
 float _Is4D;
-// Format du buffer temporel (GaussianSplatAsset.TemporalFormat) : 0 = 4C4D (52 octets/splat), 1 = FreeTimeGS (32 octets/splat)
+// Format du buffer temporel (GaussianSplatAsset.TemporalFormat) : 0 = 4C4D (52 octets/splat), 1 = FreeTimeGS (32 octets/splat),
+// 2 = HD 4DGS (112 octets/splat, GaussianSplatAssetBuilder.CreateTemporalDataTrigs)
 float _TemporalMode;
+
+// HD 4DGS : produit de quaternions (x, y, z, w)
+float4 QuatMulXYZW(float4 a, float4 b)
+{
+    return float4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz));
+}
+float3 TLoad3(uint addr) { return float3(asfloat(_SplatTemporal.Load(addr)), asfloat(_SplatTemporal.Load(addr + 4u)), asfloat(_SplatTemporal.Load(addr + 8u))); }
 
 // radix sort etc. friendly, see http://stereopsis.com/radix.html
 uint FloatToSortableUint(float f)
@@ -290,7 +298,43 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
     SplatViewData view = (SplatViewData)0;
     float3 delta_mean; float marginal_t; float3 cov3d0_4d; float3 cov3d1_4d;
     float3 scale_lin;   // echelle lineaire (filtre de taille)
-    if (_Is4D > 0.5 && _TemporalMode > 0.5)
+    if (_Is4D > 0.5 && _TemporalMode > 1.5)
+    {
+        // HD 4DGS : vissage (rotation + translation) dont la vitesse suit une courbe de Bezier quadratique dans la
+        // fenetre de vie (equations publiees du modele ; reference ITHACA : lecteur4d/trgz.js). Centre ET orientation
+        // changent avec le temps ; opacite gaussienne en temps avec coupure douce, nulle hors de la fenetre de sequence.
+        uint a0 = idx * 112u;
+        float mu = asfloat(_SplatTemporal.Load(a0)), sig = max(asfloat(_SplatTemporal.Load(a0 + 4u)), 1e-6);
+        float3 anchor = TLoad3(a0 + 8u);
+        float3 p0t = TLoad3(a0 + 20u), p0r = TLoad3(a0 + 32u), p1t = TLoad3(a0 + 44u), p1r = TLoad3(a0 + 56u);
+        float3 p2t = TLoad3(a0 + 68u), p2r = TLoad3(a0 + 80u);
+        float w0 = asfloat(_SplatTemporal.Load(a0 + 92u)), w1 = asfloat(_SplatTemporal.Load(a0 + 96u));
+        float tScale = asfloat(_SplatTemporal.Load(a0 + 100u)), coupure = asfloat(_SplatTemporal.Load(a0 + 104u));
+        float u0 = asfloat(_SplatTemporal.Load(a0 + 108u));
+        float dts = (_SplatCurrentTime - u0) * tScale - mu;
+        float gm = exp(-0.5 * (dts / sig) * (dts / sig));
+        if (coupure > 0) gm = max((gm - coupure) / (1.0 - coupure), 0.0);
+        marginal_t = (_SplatCurrentTime < w0 || _SplatCurrentTime >= w1) ? 0.0 : gm;
+        float tau = saturate((dts + 2.0 * sig) / (4.0 * sig)), b0 = (1.0 - tau) * (1.0 - tau), b1 = 2.0 * (1.0 - tau) * tau, b2 = tau * tau;
+        float3 nu = b0 * p0t + b1 * p1t + b2 * p2t, om = b0 * p0r + b1 * p1r + b2 * p2r;
+        float w2 = dot(om, om);
+        float3 an = anchor;
+        if (w2 >= 1e-8) { float dd = max(w2, 1e-10); an -= (dot(anchor, om) / dd) * om; nu = (dot(nu, om) / dd) * om; }
+        float3 phi = om * dts, rho = nu * dts;
+        float t2 = dot(phi, phi), th = sqrt(t2), qw, qs, Bc, Cc;
+        if (t2 < 1e-8) { qw = 1.0 - t2 / 8.0; qs = 0.5 - t2 / 48.0; Bc = 0.5 - t2 / 24.0; Cc = 1.0 / 6.0 - t2 / 120.0; }
+        else { qw = cos(0.5 * th); qs = sin(0.5 * th) / th; Bc = (1.0 - cos(th)) / t2; Cc = (th - sin(th)) / (t2 * th); }
+        float4 q = normalize(float4(phi * qs, qw));
+        float3 c1 = cross(phi, rho), pp = rho + Bc * c1 + Cc * cross(phi, c1);
+        float3 v = splat.pos - an, tq = 2.0 * cross(q.xyz, v);
+        float3 centre = v + q.w * tq + cross(q.xyz, tq) + an + pp;
+        delta_mean = centre - splat.pos;
+        float4 rot_t = normalize(QuatMulXYZW(q, splat.rot));
+        float3x3 rsm = CalcMatrixFromRotationScale(rot_t, splat.scale);
+        CalcCovariance3D(rsm, cov3d0_4d, cov3d1_4d);
+        scale_lin = splat.scale;
+    }
+    else if (_Is4D > 0.5 && _TemporalMode > 0.5)
     {
         // FreeTimeGS (8 floats = 32 bytes per splat) : gaussienne 3D classique (rotation/echelle de l'asset)
         // deplacee par sa vitesse, opacite gaussienne en temps, nulle hors de la fenetre de sa sequence.

@@ -52,9 +52,15 @@ namespace GaussianSplatting4D.Runtime.Utils
             public int bloc;
             public string ply;
             public List<Flux> flux;
+            // HD 4DGS (.trgz, signature TRGSZ001, 21/11/2026) : memes flux, en-tete PLY reconstitue (EnteteTrgz)
+            public int sh_degree, sh_source, images;
+            public float fps_modele, coupure;
         }
 
-        public static bool IsFtgsz(string filePath) => filePath.EndsWith(".ftgsz", true, CultureInfo.InvariantCulture);
+        // .ftgsz, et .trgz (HD 4DGS : meme decodage, PLY aux champs mu, log_sigma, anchor_*, p0_*..p2_* lu ensuite
+        // comme TemporalKind.Trigs)
+        public static bool IsFtgsz(string filePath) => filePath.EndsWith(".ftgsz", true, CultureInfo.InvariantCulture)
+                                                       || filePath.EndsWith(".trgz", true, CultureInfo.InvariantCulture);
 
         // Application : dossier du PLY decode, fixe sur le fil principal par GaussianSplatRuntimeLoader (les chemins de
         // Unity ne se lisent pas sur un autre fil) ; le PLY y est efface des qu'il a ete lu (DeleteAfterRead). Editeur :
@@ -85,14 +91,35 @@ namespace GaussianSplatting4D.Runtime.Utils
 
         public static Entete ReadHeader(byte[] o, out int debutFlux)
         {
-            if (o.Length < 12 || Encoding.ASCII.GetString(o, 0, 8) != "FTGSZ002")
-                throw new IOException("Ce n'est pas un fichier .ftgsz (version 2).");
+            string sig = o.Length >= 12 ? Encoding.ASCII.GetString(o, 0, 8) : "";
+            if (sig != "FTGSZ002" && sig != "TRGSZ001")
+                throw new IOException("Ce n'est pas un fichier .ftgsz (version 2) ni .trgz (version 1).");
             int lg = BitConverter.ToInt32(o, 8);
             var h = Encoding.UTF8.GetString(o, 12, lg).FromJson<Entete>();
+            if (h != null && sig == "TRGSZ001") h.ply = EnteteTrgz(h);
             if (h == null || h.flux == null || string.IsNullOrEmpty(h.ply))
                 throw new IOException("En-tete .ftgsz illisible.");
             debutFlux = 12 + lg;
             return h;
+        }
+
+        // En-tete PLY d'une sequence HD 4DGS : tous les coefficients f_rest de la source (absents = 0), puis les champs
+        // propres au modele ; commentaires lus par GaussianFileReader.ParseFtgsHeader
+        static string EnteteTrgz(Entete h)
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var sb = new StringBuilder();
+            sb.Append("ply\nformat binary_little_endian 1.0\ncomment trgz_version 1\ncomment time_units normalized\n");
+            sb.Append($"comment n_frames {(h.images > 1 ? h.images : 2)}\ncomment fps_modele {h.fps_modele.ToString(inv)}\n");
+            sb.Append($"comment coupure {h.coupure.ToString(inv)}\nelement vertex {h.gaussiennes}\n");
+            var champs = new List<string> { "x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2" };
+            for (int i = 0; i < 3 * h.sh_source; i++) champs.Add($"f_rest_{i}");
+            champs.AddRange(new[] { "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3", "mu", "log_sigma",
+                                    "anchor_0", "anchor_1", "anchor_2" });
+            for (int c = 0; c < 3; c++) for (int j = 0; j < 6; j++) champs.Add($"p{c}_{j}");
+            foreach (var c in champs) sb.Append($"property float {c}\n");
+            sb.Append("end_header\n");
+            return sb.ToString();
         }
 
         public static byte[] DecodeToPly(string filePath)

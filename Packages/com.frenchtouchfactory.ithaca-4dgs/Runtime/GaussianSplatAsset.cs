@@ -119,9 +119,11 @@ namespace GaussianSplatting4D.Runtime
         {
             Legacy4C4D = 0,   // 13 floats (52 octets) par splat : t, scale_t, rot_r, rot brut, echelle brute
             FreeTimeGS = 1,   // 8 floats (32 octets) par splat : time, duree, vitesse, fenetre, reserve
+            Trigs = 2,        // HD 4DGS (.trgz, 21/11/2026) : 28 floats (112 octets), voir CreateTemporalDataTrigs
         }
         public const int kTemporalStride4C4D = 52;
         public const int kTemporalStrideFTGS = 32;
+        public const int kTemporalStrideTrigs = 112;
 
         public void SetTemporalInfo(TemporalFormat format, int frames, int firstFrame, int segments)
         {
@@ -257,7 +259,10 @@ namespace GaussianSplatting4D.Runtime
         public int temporalFrames => m_TemporalFrames;
         public int temporalFirstFrame => m_TemporalFirstFrame;
         public int temporalSegments => m_TemporalSegments;
-        public int temporalStride => m_TemporalFormat == TemporalFormat.FreeTimeGS ? kTemporalStrideFTGS : kTemporalStride4C4D;
+        public int temporalStride => m_TemporalFormat == TemporalFormat.FreeTimeGS ? kTemporalStrideFTGS
+            : m_TemporalFormat == TemporalFormat.Trigs ? kTemporalStrideTrigs : kTemporalStride4C4D;
+        // temps normalise [0,1] sur toute la video (FreeTimeGS et HD 4DGS)
+        public bool normalizedTime => m_TemporalFormat == TemporalFormat.FreeTimeGS || m_TemporalFormat == TemporalFormat.Trigs;
 
         public struct ChunkInfo
         {

@@ -737,6 +737,48 @@ namespace GaussianSplatting4D.Runtime
             data.Dispose();
         }
 
+        // HD 4DGS (.trgz, 21/11/2026) : 28 floats par splat (GaussianSplatAsset.kTemporalStrideTrigs), lus par
+        // Splat4DUtilities.compute (_TemporalMode = 2). Le modele garde son propre mouvement : vissage (rotation +
+        // translation) dont la vitesse suit une courbe de Bezier quadratique dans la fenetre de vie (equations publiees ;
+        // reference ITHACA : trigsz.py, lecteur web lecteur4d/trgz.js). Temps du modele de la gaussienne :
+        //   dt = (temps video normalise - u0) * tScale - mu   (secondes)
+        // u0 et tScale situent la sequence dans la video : recales par Gaussian4DSequencePlayer.RecalerTrigs (sequence
+        // d'un .4dgs) ; ici, sequence seule couvrant [0, 1].
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SplatTemporalDataTrigs
+        {
+            public float mu, sigma;                                   // secondes, temps du modele
+            public float ax, ay, az;                                  // ancre
+            public float p0tx, p0ty, p0tz, p0rx, p0ry, p0rz;          // points de controle (nu, omega)
+            public float p1tx, p1ty, p1tz, p1rx, p1ry, p1rz;
+            public float p2tx, p2ty, p2tz, p2rx, p2ry, p2rz;
+            public float win_start, win_end;                          // fenetre de sequence (temps video normalise)
+            public float tScale, coupure, u0;
+        }
+
+        public static void CreateTemporalDataTrigs(NativeArray<InputSplatData> inputSplats, Stream output, ref Hash128 dataHash, FtgsHeaderInfo info)
+        {
+            int count = inputSplats.Length, n = math.max(info.nFrames, 2);
+            float frame = 1f / (n - 1), tScale = (n - 1) / math.max(info.fpsModele, 1e-3f);
+            NativeArray<SplatTemporalDataTrigs> data = new NativeArray<SplatTemporalDataTrigs>(count, TempAllocator);
+            for (int i = 0; i < count; i++)
+            {
+                var s = inputSplats[i];
+                data[i] = new SplatTemporalDataTrigs
+                {
+                    mu = s.trigs_mu, sigma = math.max(math.exp(s.trigs_log_sigma), 1e-6f),
+                    ax = s.trigs_anchor.x, ay = s.trigs_anchor.y, az = s.trigs_anchor.z,
+                    p0tx = s.trigs_p0t.x, p0ty = s.trigs_p0t.y, p0tz = s.trigs_p0t.z, p0rx = s.trigs_p0r.x, p0ry = s.trigs_p0r.y, p0rz = s.trigs_p0r.z,
+                    p1tx = s.trigs_p1t.x, p1ty = s.trigs_p1t.y, p1tz = s.trigs_p1t.z, p1rx = s.trigs_p1r.x, p1ry = s.trigs_p1r.y, p1rz = s.trigs_p1r.z,
+                    p2tx = s.trigs_p2t.x, p2ty = s.trigs_p2t.y, p2tz = s.trigs_p2t.z, p2rx = s.trigs_p2r.x, p2ry = s.trigs_p2r.y, p2rz = s.trigs_p2r.z,
+                    win_start = -0.01f * frame, win_end = 1f + 0.99f * frame,
+                    tScale = tScale, coupure = info.coupure, u0 = 0f,
+                };
+            }
+            EmitSimpleData(data, output, ref dataHash);
+            data.Dispose();
+        }
+
         public static void CreateTemporalData(NativeArray<InputSplatData> inputSplats, Stream output, ref Hash128 dataHash)
         {
             int count = inputSplats.Length;
