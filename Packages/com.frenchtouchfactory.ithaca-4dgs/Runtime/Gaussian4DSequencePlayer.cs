@@ -109,8 +109,8 @@ namespace GaussianSplatting4D.Runtime
             public float uploadMB;           // envoye au GPU depuis l'ouverture
             public float uploadMs;           // duree des envois de la derniere image
             public float uploadBudgetMB;     // budget d'envoi par image en cours
-            public int hardSyncs;            // sauts de l'horloge sur le son (au-dela de 1 s)
-            public int softSyncFrames;       // images rattrapees en douceur
+            public int hardSyncs;            // recalages durs de l'horloge sur le son (ecart > 0,25 s)
+            public int softSyncFrames;       // toujours 0 : plus de rattrapage doux (vitesse constante, 25/11/2026)
             public int junctions;            // modeles de jonction prepares (fondu enchaine)
             public int capacity;             // sequences gardees chargees
             public int decoders;             // preparations en parallele
@@ -118,6 +118,7 @@ namespace GaussianSplatting4D.Runtime
             public int waits;                // attentes d'une sequence pas prete
             public float activateMs;         // derniere activation d'un modele envoye (adoption, tampons de tri)
             public float releaseMs;          // derniere liberation d'un modele
+            public double clockRealtime;     // instant reel (Time.realtimeSinceStartupAsDouble) de currentFrame
         }
 
         [Tooltip("Objet de la scene avec Gaussian4DSplatRenderer et Gaussian4DPlayer deja regles (shaders, melange) ; desactive, sert de modele aux sequences chargees")]
@@ -414,6 +415,7 @@ namespace GaussianSplatting4D.Runtime
             if (!m_Paused) return;
             m_Paused = false;
             if (state == State.Playing) StartAudio(m_Time);
+            else Ancrer(m_Time, Reel);
         }
 
         public void Seek(float seconds)
@@ -422,6 +424,7 @@ namespace GaussianSplatting4D.Runtime
             m_Time = Mathf.Clamp(seconds, 0, Mathf.Max(0, Duration - 1e-4f));
             currentFrame = (float)(m_Time * rendu.fps);
             if (state == State.Playing && !m_Paused) StartAudio(m_Time);
+            else Ancrer(m_Time, Reel);
         }
 
         IEnumerator Run()
@@ -558,6 +561,7 @@ namespace GaussianSplatting4D.Runtime
                 }
             }
             currentFrame = frame;
+            stats.clockRealtime = m_ReelImage;
 
             // fenetre de sequences en avance (preparations, jonctions), envois au GPU par morceaux, une activation
             Alimenter(k, frame);
@@ -1009,33 +1013,65 @@ namespace GaussianSplatting4D.Runtime
             Debug.LogError("[Gaussian4DSequencePlayer] " + message);
         }
 
-        // ---- horloge. Le son, quand il est entendu, mene : le temps suit l'ecran et rattrape le son en douceur
-        // (vitesse ±25 % au plus, proportionnelle a l'ecart) jusqu'a 1 s d'ecart ; il ne saute qu'au depart (lecture,
-        // deplacement, boucle, reprise) ou au-dela de 1 s ; une image a plus de 1 s d'avance attend le son. Il ne recule
-        // jamais pendant la lecture. Sans son entendu : le temps des images. Position du son : horloge de la carte son
-        // (AudioSettings.dspTime, avancee par paquets) prolongee entre ses changements.
+        // ---- horloge (25/11/2026, regle ITHACA « il faut rester constant ») : vitesse de lecture STRICTEMENT constante,
+        // jamais d'acceleration ni de ralentissement, meme doux. Temps du rendu = ancre + (temps reel - ancre reelle),
+        // pente 1. Avec le son : l'ancre est posee sur la position du son lissee (couples temps reel / dspTime des
+        // 0,5 dernieres secondes, droite de pente 1 : moyenne des ecarts) ; recalage dur seulement au depart, a la boucle,
+        // a la pause / reprise / au deplacement, ou si l'horloge s'ecarte de plus de 0,25 s du son lisse. Appareil lent :
+        // des images sont sautees, la vitesse ne change pas. Sans son : temps reel. Le temps ne recule jamais.
         double m_Time;               // temps du rendu (s)
-        bool m_AudioOn, m_Sync;
+        bool m_AudioOn;
         double m_AudioDsp, m_AudioPos;     // depart programme des pistes (dspTime) et temps du rendu a ce depart
-        double m_DernierDsp = -1, m_DernierDspReel;
+        double m_Ancre, m_AncreReel;       // m_Time = m_Ancre + (reel - m_AncreReel)
+        double m_DernierDsp = -1, m_ReelImage;
+        readonly Queue<(double reel, double dsp)> m_Couples = new();
+        const double kFenetreLissage = 0.5, kEcartMax = 0.25;
 
+        static double Reel => Time.realtimeSinceStartupAsDouble;
+
+        // couples (temps reel, dspTime) a chaque changement de dspTime (avance par paquets), 0,5 s gardees
+        void Echantillonner()
+        {
+            double dsp = AudioSettings.dspTime, r = Reel;
+            if (dsp != m_DernierDsp) { m_DernierDsp = dsp; m_Couples.Enqueue((r, dsp)); }
+            while (m_Couples.Count > 2 && r - m_Couples.Peek().reel > kFenetreLissage) m_Couples.Dequeue();
+        }
+
+        // dspTime lisse a l'instant reel r : droite de pente 1 ajustee sur les couples (moyenne des ecarts)
+        double DspLisse(double r)
+        {
+            if (m_Couples.Count == 0) return AudioSettings.dspTime;
+            double ecart = 0;
+            foreach (var c in m_Couples) ecart += c.dsp - c.reel;
+            return r + ecart / m_Couples.Count;
+        }
+
+        void Ancrer(double t, double reel) { m_Ancre = t; m_AncreReel = reel; }
+
+        // depart des pistes : programmees a l'instant ou l'horloge (qui part tout de suite de renderTime, sans arret)
+        // atteindra leur position ; aucune attente de l'image
         void StartAudio(double renderTime)
         {
             m_AudioOn = false;
+            Echantillonner();
+            double r = Reel;
             double debut = AudioSettings.dspTime + 0.05;          // depart commun de toutes les pistes
+            double avance = Math.Max(0, debut - DspLisse(r));      // secondes de rendu jusqu'a ce depart
+            double pos = renderTime + avance;
             foreach (var a in m_Audio)
             {
                 if (!a) continue;
                 a.Stop();
-                double ts = renderTime + rendu.decalage_son;
+                double ts = pos + rendu.decalage_son;
                 if (a.clip == null || ts >= a.clip.length) continue;
                 a.time = (float)Math.Max(ts, 0);
                 a.PlayScheduled(debut + Math.Max(-ts, 0));
                 m_AudioOn = true;
             }
             m_AudioDsp = debut;
-            m_AudioPos = renderTime;
-            m_Sync = true;
+            m_AudioPos = pos;
+            Ancrer(renderTime, r);
+            m_Time = renderTime;
         }
 
         void StopAudio()
@@ -1044,39 +1080,31 @@ namespace GaussianSplatting4D.Runtime
             m_AudioOn = false;
         }
 
-        // temps du rendu correspondant au son entendu
-        double Heard()
-        {
-            double dsp = AudioSettings.dspTime, reel = Time.realtimeSinceStartupAsDouble;
-            if (dsp != m_DernierDsp) { m_DernierDsp = dsp; m_DernierDspReel = reel; }
-            double p = m_DernierDsp + Math.Min(Math.Max(0, reel - m_DernierDspReel), 0.25);
-            return m_AudioPos + (p - m_AudioDsp);
-        }
+        // temps du rendu correspondant au son entendu (position lissee)
+        double Heard() => m_AudioPos + (DspLisse(Reel) - m_AudioDsp);
 
         void Avancer(float dt)
         {
-            // son entendu : au moins une piste en lecture (ou programmee)
-            if (m_AudioOn && !m_Audio.Exists(a => a && a.isPlaying)) m_AudioOn = false;
-            if (!m_AudioOn) { m_Time += dt; return; }
-            double cible = Heard(), prevu = m_Time + dt, e = cible - prevu;
-            if (m_Sync)
+            if (m_AudioOn && !m_Audio.Exists(a => a && a.isPlaying))
             {
-                // depart, deplacement, boucle, reprise : sur le son (sans pas en arriere s'il est proche)
-                m_Time = Math.Abs(cible - m_Time) > 0.5 ? cible : Math.Max(m_Time, cible);
-                m_Sync = false;
+                // fin des pistes : la suite au temps reel, sans changer de vitesse
+                m_AudioOn = false;
             }
-            else if (e > 1)
+            double r = Reel;
+            if (m_AudioOn)
             {
-                m_Time = Math.Max(m_Time, cible);                  // plus de 1 s de retard : saut
-                stats.hardSyncs++;
+                Echantillonner();
+                double horloge = m_Ancre + (r - m_AncreReel);
+                double son = Heard();
+                if (DspLisse(r) >= m_AudioDsp && Math.Abs(horloge - son) > kEcartMax)
+                {
+                    // l'horloge s'ecarte du son lisse de plus de 0,25 s : recalage dur (jamais en arriere)
+                    Ancrer(Math.Max(m_Time, son), r);
+                    stats.hardSyncs++;
+                }
             }
-            else if (e >= -1)
-            {
-                double corr = Math.Max(-0.25 * dt, Math.Min(0.25 * dt, 0.08 * e));
-                if (Math.Abs(corr) > 0.02 * dt) stats.softSyncFrames++;
-                m_Time = Math.Max(m_Time, prevu + corr);
-            }
-            // sinon : plus de 1 s d'avance, l'image attend le son
+            m_Time = Math.Max(m_Time, m_Ancre + (r - m_AncreReel));
+            m_ReelImage = r;
         }
 
         // ---- fichiers

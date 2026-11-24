@@ -23,9 +23,12 @@ automatic defaults.
   overlap at constant density (α' = 1 − (1 − α)^w: `Gaussian4DSplatRenderer.junctionSplit` / `junctionWeights`,
   `_JunctionSplit` in Splat4DUtilities.compute; 0 = unchanged rendering). Without a junction ready: both sequences
   with the same weights (fallback).
-- Sound clock: time never goes back while playing; soft catch-up (±25 %) up to 1 s of drift; hard jump only at start,
-  loop, pause / seek or beyond 1 s; a frame more than 1 s ahead waits for the sound. `Pause()`, `Play()`, `Seek()`,
-  `paused`, `stats`.
+- Clock at a strictly constant speed (ITHACA rule "il faut rester constant", 2026-11-25): render time = anchor + real
+  time (slope 1), anchored on the smoothed sound position (real time / dspTime pairs of the last 0.5 s, line of slope 1);
+  no speed-up or slow-down, ever; hard re-anchor only at start, loop, pause / resume / seek, or beyond 0.25 s from the
+  smoothed sound; a slow device skips frames. Without sound: real time. Time never goes back. Tracks are scheduled
+  where the running clock will be, so the picture never stops at a (re)start. `Pause()`, `Play()`, `Seek()`, `paused`,
+  `stats` (`clockRealtime`: real instant of `currentFrame`).
 - `.ftgsz` / `.trgz` decoded in memory at runtime (no intermediate PLY file), without per-component arrays;
   `skipUnusedSH`: colour streams above the renderer's `m_SHOrder` neither decompressed nor decoded.
 - Fixed: the raw PLY data of each loaded file stayed allocated (≈ 300 MB for a sequence of one million gaussians).
