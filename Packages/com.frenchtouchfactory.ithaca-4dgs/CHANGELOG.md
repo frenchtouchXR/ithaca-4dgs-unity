@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Smooth playback (2026-11-24, port of the ITHACA JS player 0.4.0)
+No change needed in existing code: public fields, properties and methods keep their meaning; new options have
+automatic defaults.
+- `Gaussian4DSequencePlayer`: a window of sequences ahead stays loaded (`memoryBudgetMB`, 0 = automatic), prepared by
+  several background threads (`decoders`, 0 = automatic); time recalibration (HD 4DGS), widened windows and play
+  window computed on those threads too.
+- GPU uploads by pieces within a per-frame budget (`uploadMsPerFrame`, ≈ 4 ms, set on the measured cost), earliest
+  needed first (`GaussianSplatGpuData`, `GaussianSplatRuntimeLoader.CreateAssetGpu`, `GaussianSplatAsset.gpuData`):
+  buffers filled by ranges, colour texture by bands of rows copied on the GPU; the renderer and `Gaussian4DPlayer`
+  adopt the data without a copy; a sequence needed at once and not uploaded yet is finished in one go
+  (`stats.forcedUploads`, should stay 0). One activation per frame.
+- Crossfade: junction model of two neighbour sequences, sorted as a whole (`GaussianSplatJunction`, built on a
+  background thread; HD 4DGS: only the gaussians visible during the overlap), continuous weights over the whole
+  overlap at constant density (α' = 1 − (1 − α)^w: `Gaussian4DSplatRenderer.junctionSplit` / `junctionWeights`,
+  `_JunctionSplit` in Splat4DUtilities.compute; 0 = unchanged rendering). Without a junction ready: both sequences
+  with the same weights (fallback).
+- Sound clock: time never goes back while playing; soft catch-up (±25 %) up to 1 s of drift; hard jump only at start,
+  loop, pause / seek or beyond 1 s; a frame more than 1 s ahead waits for the sound. `Pause()`, `Play()`, `Seek()`,
+  `paused`, `stats`.
+- `.ftgsz` / `.trgz` decoded in memory at runtime (no intermediate PLY file), without per-component arrays;
+  `skipUnusedSH`: colour streams above the renderer's `m_SHOrder` neither decompressed nor decoded.
+- Fixed: the raw PLY data of each loaded file stayed allocated (≈ 300 MB for a sequence of one million gaussians).
+- Same pixels as before (built-in pipeline, 3DGS / 4C4D / FreeTimeGS / HD 4DGS, VeryHigh and Medium, classic and
+  piecewise upload paths): 48 / 48 images identical.
+
 ### Added
 - `Gaussian4DSequencePlayer`: crossfade between sequences for ITHACA renders made with a transition (overlapping
   sequences: `trainPremiere` / `trainImages` in the share JSON, `entrainement_premiere` / `entrainement_images` in

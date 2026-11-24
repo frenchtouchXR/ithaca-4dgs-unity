@@ -23,7 +23,7 @@ namespace GaussianSplatting4D.Runtime.Utils
         }
 
         // Lignes "comment <cle> <valeur>" de l'en-tete (ex. FreeTimeGS : n_frames, min_duration)
-        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out Dictionary<string, string> comments, FileStream fs)
+        static void ReadHeaderImpl(string filePath, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out Dictionary<string, string> comments, Stream fs)
         {
             comments = new Dictionary<string, string>();
             // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
@@ -84,6 +84,13 @@ namespace GaussianSplatting4D.Runtime.Utils
                 throw new IOException($"PLY {filePath} read error, expected {vertices.Length} data bytes got {readBytes}");
         }
 
+        // En-tete PLY deja en memoire (sequences .ftgsz / .trgz decodees sans fichier intermediaire)
+        public static void ReadHeader(byte[] header, string name, out int vertexCount, out int vertexStride, out List<(string, ElementType)> attrs, out Dictionary<string, string> comments)
+        {
+            using var ms = new MemoryStream(header, false);
+            ReadHeaderImpl(name, out vertexCount, out vertexStride, out attrs, out comments, ms);
+        }
+
         public enum ElementType
         {
             None,
@@ -104,7 +111,7 @@ namespace GaussianSplatting4D.Runtime.Utils
             };
         }
 
-        static string ReadLine(FileStream fs)
+        static string ReadLine(Stream fs)
         {
             var byteBuffer = new List<byte>();
             while (true)

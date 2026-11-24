@@ -305,6 +305,11 @@ namespace GaussianSplatting4D.Runtime
         // donnees sur le GPU mais rien de dessine (ni tri, ni calcul de vue) : sequence suivante preparee d'avance par
         // Gaussian4DSequencePlayer, montree a sa premiere image
         [System.NonSerialized] public bool suspended;
+        // fondu enchaine (Gaussian4DSequencePlayer, 24/11/2026) : gaussiennes [0, junctionSplit) du cote 1, les suivantes
+        // du cote 2 ; opacite de chaque cote ponderee a densite constante, a' = 1 - (1 - a)^w (junctionWeights.x, .y) ;
+        // 0 : aucune ponderation (rendu inchange) ; int.MaxValue : tout le modele avec junctionWeights.x
+        [System.NonSerialized] public int junctionSplit;
+        [System.NonSerialized] public Vector2 junctionWeights = Vector2.one;
 
         // Vues hors ecran (passe URP 4D) : images supplementaires des gaussiennes, dessinees dans le rendu de la camera
         // principale avant ses objets opaques, sans tri (couverture : l'alpha accumule ne depend pas de l'ordre), une
@@ -438,6 +443,8 @@ namespace GaussianSplatting4D.Runtime
             public static readonly int Is4D = Shader.PropertyToID("_Is4D");
             public static readonly int TemporalMode = Shader.PropertyToID("_TemporalMode");
             public static readonly int SplatOpacityScale = Shader.PropertyToID("_SplatOpacityScale");
+            public static readonly int JunctionSplit = Shader.PropertyToID("_JunctionSplit");
+            public static readonly int JunctionWeights = Shader.PropertyToID("_JunctionWeights");
             public static readonly int SplatSize = Shader.PropertyToID("_SplatSize");
             public static readonly int SplatCount = Shader.PropertyToID("_SplatCount");
             public static readonly int SHOrder = Shader.PropertyToID("_SHOrder");
@@ -503,10 +510,11 @@ namespace GaussianSplatting4D.Runtime
             m_Asset != null &&
             m_Asset.splatCount > 0 &&
             m_Asset.formatVersion == GaussianSplatAsset.kCurrentVersion &&
-            m_Asset.posData != null &&
-            m_Asset.otherData != null &&
-            m_Asset.shData != null &&
-            m_Asset.colorData != null;
+            (m_Asset.gpuData != null ||
+             (m_Asset.posData != null &&
+              m_Asset.otherData != null &&
+              m_Asset.shData != null &&
+              m_Asset.colorData != null));
         public bool HasValidRenderSetup => m_GpuPosData != null && m_GpuOtherData != null && m_GpuChunks != null;
 
         const int kGpuViewDataSize = 40;
@@ -518,6 +526,16 @@ namespace GaussianSplatting4D.Runtime
 
             m_Is4D = 0f; // reset, le player 4D le remet a 1 si present
             m_SplatCount = asset.splatCount;
+            if (asset.gpuData != null)
+            {
+                // modele deja sur le GPU (envoye par morceaux) : adopte sans copie ; il reste a l'asset
+                var g = asset.gpuData;
+                if (!g.complete) { g.Upload(long.MaxValue); ++GaussianSplatGpuData.forcedUploads; }
+                m_GpuPosData = g.pos; m_GpuOtherData = g.other; m_GpuSHData = g.sh; m_GpuColorData = g.color;
+                m_GpuChunks = g.chunks; m_GpuChunksValid = g.chunksValid;
+            }
+            else
+            {
             m_GpuPosData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int) (asset.posData.dataSize / 4), 4) { name = "GaussianPosData" };
             m_GpuPosData.SetData(asset.posData.GetData<uint>());
             m_GpuOtherData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int) (asset.otherData.dataSize / 4), 4) { name = "GaussianOtherData" };
@@ -544,6 +562,7 @@ namespace GaussianSplatting4D.Runtime
                 m_GpuChunks = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1,
                     UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()) {name = "GaussianChunkData"};
                 m_GpuChunksValid = false;
+            }
             }
 
             m_GpuView = new GraphicsBuffer(GraphicsBuffer.Target.Structured, m_Asset.splatCount, kGpuViewDataSize);
@@ -730,15 +749,17 @@ namespace GaussianSplatting4D.Runtime
             mat.SetInteger(Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
         }
 
+        // les buffers d'un modele envoye par morceaux (GaussianSplatGpuData) restent a leur asset
         static void DisposeBuffer(ref GraphicsBuffer buf)
         {
-            buf?.Dispose();
+            if (!GaussianSplatGpuData.Owns(buf)) buf?.Dispose();
             buf = null;
         }
 
         void DisposeResourcesForAsset()
         {
-            DestroyImmediate(m_GpuColorData);
+            if (!GaussianSplatGpuData.Owns(m_GpuColorData)) DestroyImmediate(m_GpuColorData);
+            m_GpuColorData = null;
 
             DisposeBuffer(ref m_GpuPosData);
             DisposeBuffer(ref m_GpuOtherData);
@@ -828,6 +849,8 @@ namespace GaussianSplatting4D.Runtime
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.TemporalCutoff, m_TemporalCutoff);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.Is4D, m_Is4D);
             cmb.SetComputeFloatParam(m_CSSplatUtilities, Props.SplatOpacityScale, m_OpacityScale);
+            cmb.SetComputeIntParam(m_CSSplatUtilities, Props.JunctionSplit, junctionSplit);
+            cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.JunctionWeights, junctionWeights);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOrder, m_SHOrder);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOnly, m_SHOnly ? 1 : 0);
 

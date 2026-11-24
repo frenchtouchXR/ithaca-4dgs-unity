@@ -248,6 +248,11 @@ namespace GaussianSplatting4D.Runtime
         public SHFormat shFormat => m_SHFormat;
         public ColorFormat colorFormat => m_ColorFormat;
 
+        // Modele charge pendant l'execution et deja envoye (ou en cours d'envoi) au GPU par morceaux (24/11/2026,
+        // GaussianSplatRuntimeLoader.CreateAssetGpu) : les fichiers de donnees ci-dessous sont alors absents ; libere avec
+        // l'asset (GaussianSplatRuntimeLoader.DestroyAsset)
+        [NonSerialized] public GaussianSplatGpuData gpuData;
+
         public TextAsset posData => m_PosData;
         public TextAsset colorData => m_ColorData;
         public TextAsset otherData => m_OtherData;

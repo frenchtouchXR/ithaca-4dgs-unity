@@ -12,14 +12,25 @@ using UnityEngine.Networking;
 
 namespace GaussianSplatting4D.Runtime
 {
-    // Lecture d'un rendu 4DGS ITHACA decoupe en sequences (.ftgsz), avec son, sans asset prepare dans l'editeur.
+    // Lecture d'un rendu 4DGS ITHACA decoupe en sequences (.ftgsz, .trgz), avec son, sans asset prepare dans l'editeur.
     //
     // Entree : la description d'un partage ITHACA (JSON de la page de partage : total, fps, sons, decalage_son,
-    // sequences {url, premiere, images}) ; url = lien http(s) ou chemin local. Chaque sequence est telechargee (cache
-    // temporaire), preparee sur un fil d'arriere-plan (GaussianSplatRuntimeLoader) puis montee dans l'un de deux
-    // emplacements : la sequence en cours et la suivante, activee peu avant sa premiere image. Le son mene le temps
-    // (horloge de la carte son, comme le lecteur du site) : l'image suit ; si la sequence suivante n'est pas prete a
-    // temps, image et son attendent.
+    // sequences {url, premiere, images}) ou un fichier .4dgs ; url = lien http(s) ou chemin local.
+    //
+    // Lecture fluide (24/11/2026, portage du lecteur JS 0.4.0) :
+    //   - une fenetre de sequences en avance reste chargee (budget memoire de l'appareil, memoryBudgetMB), preparees par
+    //     plusieurs fils d'arriere-plan (decoders) : decodage en memoire, recalage temporel et fenetres aussi hors du
+    //     fil principal ;
+    //   - envoi au GPU par morceaux dans un budget par image (≈ uploadMsPerFrame ms, regle sur le cout mesure), la plus
+    //     proche d'abord (GaussianSplatGpuData) ; une sequence necessaire tout de suite et pas encore envoyee est finie
+    //     d'un coup en dernier recours (stats.forcedUploads, doit rester 0) ; le reste (activation du rendu) une etape
+    //     par image ;
+    //   - fondu enchaine (rendus avec transition) : modele de jonction des deux sequences trie d'un bloc
+    //     (GaussianSplatJunction, prepare en arriere-plan), poids continus sur tout le recouvrement a densite constante
+    //     (α' = 1 − (1 − α)^w) ; jonction gardee jusqu'au bout de son recouvrement ;
+    //   - horloge du son : le temps ne recule jamais ; rattrapage doux (±25 %) jusqu'a 1 s d'ecart ; saut seulement au
+    //     depart, a la boucle, a la pause / au deplacement ou au-dela de 1 s ; une image a plus de 1 s d'avance attend
+    //     le son.
     public class Gaussian4DSequencePlayer : MonoBehaviour
     {
         [Serializable]
@@ -90,7 +101,26 @@ namespace GaussianSplatting4D.Runtime
 
         public enum State { Idle, Loading, Playing, Waiting, Error }
 
-        [Tooltip("Objet de la scene avec Gaussian4DSplatRenderer et Gaussian4DPlayer deja regles (shaders, melange) ; desactive, sert de modele aux deux emplacements")]
+        // mesures de la lecture (comme stats du lecteur JS)
+        [Serializable]
+        public class Stats
+        {
+            public int forcedUploads;        // sequences finies d'un coup (envoi pas termine a temps) : doit rester 0
+            public float uploadMB;           // envoye au GPU depuis l'ouverture
+            public float uploadMs;           // duree des envois de la derniere image
+            public float uploadBudgetMB;     // budget d'envoi par image en cours
+            public int hardSyncs;            // sauts de l'horloge sur le son (au-dela de 1 s)
+            public int softSyncFrames;       // images rattrapees en douceur
+            public int junctions;            // modeles de jonction prepares (fondu enchaine)
+            public int capacity;             // sequences gardees chargees
+            public int decoders;             // preparations en parallele
+            public float sequenceMB;         // memoire d'une sequence (GPU)
+            public int waits;                // attentes d'une sequence pas prete
+            public float activateMs;         // derniere activation d'un modele envoye (adoption, tampons de tri)
+            public float releaseMs;          // derniere liberation d'un modele
+        }
+
+        [Tooltip("Objet de la scene avec Gaussian4DSplatRenderer et Gaussian4DPlayer deja regles (shaders, melange) ; desactive, sert de modele aux sequences chargees")]
         public Gaussian4DSplatRenderer template;
         public GaussianSplatRuntimeLoader.Quality quality = GaussianSplatRuntimeLoader.Quality.VeryHigh;
         public bool loop = true;
@@ -104,51 +134,33 @@ namespace GaussianSplatting4D.Runtime
         public bool keepDownloads = false;
         [Tooltip("Rendus ITHACA (repere direct) : retournement sur X pour qu'ils ne soient pas vus en miroir dans Unity")]
         public bool mirrorX = true;
-        [Tooltip("Secondes avant sa premiere image ou la sequence suivante est activee (envoi au GPU)")]
-        public float activateAhead = 1.0f;
+        [Tooltip("Secondes d'avance minimales : l'envoi au GPU d'une sequence est accelere s'il risque de ne pas etre fini ce temps avant sa premiere image")]
+        public float activateAhead = 0.6f;
         [Tooltip("Rendus avec transition (recouvrement des sequences) : fondu enchaine entre deux sequences voisines, comme la visionneuse du site ; sinon coupure nette")]
         public bool crossfade = true;
+        [Tooltip("Memoire (Mo) des sequences gardees chargees en avance ; 0 = automatique (selon l'appareil)")]
+        public float memoryBudgetMB = 0;
+        [Tooltip("Sequences preparees en parallele (fils d'arriere-plan) ; 0 = automatique")]
+        public int decoders = 0;
+        [Tooltip("Duree visee des envois au GPU par image (ms) ; le budget en octets est regle sur le cout mesure")]
+        public float uploadMsPerFrame = 4f;
+        [Tooltip("Ne pas decompresser les couleurs (harmoniques) au-dela du degre dessine par le modele (m_SHOrder) : memes images, preparation plus rapide")]
+        public bool skipUnusedSH = true;
 
         public State state { get; private set; } = State.Idle;
         public string status { get; private set; } = "";
         public RenduInfo rendu { get; private set; }
         public float currentFrame { get; private set; }
         public float lastPrepareSeconds { get; private set; }
+        public Stats stats { get; private set; } = new Stats();
+        public bool paused => m_Paused;
         // demi-largeur horizontale du modele cadre (boite robuste, limitee a la boite du cadrage qui garde l'interieur),
         // en unites de ce lecteur ; 0 tant que la premiere sequence n'est pas prete (ombre au sol, interface)
         public float modelRadius { get; private set; }
         // son : pistes chargees, lecture, ecart entre la position du son et celle de l'image (s)
         public string audioStatus => m_Audio.Count == 0 ? "sans son" :
             $"{m_Audio.Count} piste(s) {(m_Audio.Exists(a => a && a.isPlaying) ? "en lecture" : "arretee(s)")}, " +
-            $"ecart son/image {(m_Audio[0] && m_Audio[0].isPlaying ? (m_Audio[0].time - rendu.decalage_son - RenderTime()) * 1000 : 0):0} ms";
-
-        class Slot
-        {
-            public GameObject go;
-            public Gaussian4DSplatRenderer renderer;
-            public Gaussian4DPlayer player;
-            public GaussianSplatAsset asset;
-            public int seq = -1;
-            public bool loading;
-            public float opacite;   // reglages du modele, multiplies par le poids du fondu
-            public int ordre;
-        }
-
-        Slot[] m_Slots = new Slot[2];   // trois avec les transitions : precedente, en cours, suivante
-
-        // transition entre les sequences a et a + 1 : images debut..fin dessinees ensemble ; J = derniere image du cœur de a
-        class Zone { public int a, debut, fin, J; }
-        Zone[] m_Zones = Array.Empty<Zone>();
-        Transform m_Scene;          // repere de la scene du site (pieds au sol) : cadrage et boite
-        Transform m_Cadre;          // cadrage du rendu, parent des emplacements
-        GaussianCutout m_Boite;
-        bool m_Cadree;
-        readonly List<AudioSource> m_Audio = new();
-        readonly List<string> m_Downloaded = new();   // fichiers telecharges pendant cette lecture
-        static bool s_CachePurged;
-        double m_ClockStart;        // horloge (dspTime) correspondant a l'image 0 du rendu
-        double m_PausedAt = -1;     // temps du rendu fige pendant une attente
-        Coroutine m_Run;
+            $"ecart son/image {(m_AudioOn ? (Heard() - m_Time) * 1000 : 0):0} ms";
 
         public void Open(string json)
         {
@@ -296,12 +308,65 @@ namespace GaussianSplatting4D.Runtime
             }
         }
 
+        // ---- modeles charges : une entree par sequence (cle = indice) et par jonction (cle = kJonction + a)
+        const int kJonction = 1 << 20;
+        enum Etape { Chargement, Envoi, Pret }
+
+        class Entree
+        {
+            public int cle, a = -1;              // a : jonction des sequences a et a + 1
+            public bool jonction => a >= 0;
+            public Etape etape;
+            public int gen;
+            public bool telechargement;
+            public GaussianSplatRuntimeLoader.Prepared prep;   // garde jusqu'a la fin de l'envoi et des jonctions voisines
+            public GaussianSplatAsset asset;
+            public Pion pion;                    // objet de rendu (actif une fois envoye au GPU)
+            public int split;                    // jonction : premiere gaussienne du cote a + 1
+            public long octets;
+        }
+
+        class Pion
+        {
+            public GameObject go;
+            public Gaussian4DSplatRenderer renderer;
+            public Gaussian4DPlayer player;
+        }
+
+        // transition entre les sequences a et a + 1 : images debut..fin dessinees ensemble ; J = derniere image du cœur de a
+        class Zone { public int a, debut, fin, J; }
+        Zone[] m_Zones = Array.Empty<Zone>();
+        readonly Dictionary<int, Entree> m_Entrees = new();
+        readonly Stack<Pion> m_Pions = new();
+        readonly List<Pion> m_TousPions = new();
+        int m_Gen;
+        int m_Capacite;
+        long m_OctetsSequence;
+        float m_BudgetMB;
+        int m_NbDecodeurs;
+        double m_MsParMo = 2.0;
+        float m_DureeImage = 1f / 60f;
+        bool m_Pret;                 // premiere image dessinee
+        bool m_Attente;
+        int m_Ordre;
+        float m_Opacite;
+
+        Transform m_Scene;          // repere de la scene du site (pieds au sol) : cadrage et boite
+        Transform m_Cadre;          // cadrage du rendu, parent des modeles
+        GaussianCutout m_Boite;
+        bool m_Cadree;
+        readonly List<AudioSource> m_Audio = new();
+        readonly List<string> m_Downloaded = new();   // fichiers telecharges pendant cette lecture
+        static bool s_CachePurged;
+        Coroutine m_Run;
+
         public void Open(RenduInfo info)
         {
             Close();
             // cache laisse par une session precedente (application fermee en pleine lecture) : vide au premier rendu
             if (!keepDownloads && !s_CachePurged) { PurgeCache(); s_CachePurged = true; }
             rendu = info;
+            stats = new Stats();
             m_Run = StartCoroutine(Run());
         }
 
@@ -310,24 +375,54 @@ namespace GaussianSplatting4D.Runtime
             if (m_Ouverture != null) { StopCoroutine(m_Ouverture); m_Ouverture = null; }
             if (m_Run != null) StopCoroutine(m_Run);
             m_Run = null;
+            ++m_Gen;                                  // preparations en cours ignorees a leur fin
             foreach (var a in m_Audio) if (a) { a.Stop(); Destroy(a.clip); Destroy(a.gameObject); }
             m_Audio.Clear();
-            for (int i = 0; i < m_Slots.Length; ++i)
-                if (m_Slots[i] != null) { FreeSlot(m_Slots[i]); Destroy(m_Slots[i].go); m_Slots[i] = null; }
+            m_AudioOn = false;
+            foreach (var e in m_Entrees.Values) Liberer(e);
+            m_Entrees.Clear();
+            foreach (var p in m_TousPions) if (p.go) Destroy(p.go);
+            m_TousPions.Clear();
+            m_Pions.Clear();
             if (m_Scene) Destroy(m_Scene.gameObject);
             m_Boite = null;
             modelRadius = 0;
             if (!keepDownloads)
                 foreach (var f in m_Downloaded) TryDelete(f);
             m_Downloaded.Clear();
+            m_Capacite = 0; m_OctetsSequence = 0; m_Pret = false; m_Attente = false; m_Paused = false;
             state = State.Idle;
             status = "";
         }
 
         void OnDestroy() => Close();
 
-        double Now => AudioSettings.dspTime;
         float Duration => rendu.total / Mathf.Max(rendu.fps, 1);
+        bool Mobile => Application.isMobilePlatform || SystemInfo.deviceType == DeviceType.Handheld;
+
+        // ---- lecture : pause, reprise, deplacement (secondes du rendu)
+        bool m_Paused;
+        public void Pause()
+        {
+            if (m_Paused) return;
+            m_Paused = true;
+            StopAudio();
+        }
+
+        public void Play()
+        {
+            if (!m_Paused) return;
+            m_Paused = false;
+            if (state == State.Playing) StartAudio(m_Time);
+        }
+
+        public void Seek(float seconds)
+        {
+            if (rendu == null) return;
+            m_Time = Mathf.Clamp(seconds, 0, Mathf.Max(0, Duration - 1e-4f));
+            currentFrame = (float)(m_Time * rendu.fps);
+            if (state == State.Playing && !m_Paused) StartAudio(m_Time);
+        }
 
         IEnumerator Run()
         {
@@ -357,6 +452,8 @@ namespace GaussianSplatting4D.Runtime
                 m_Boite.transform.localScale = Abs(V3(boite.demi, Vector3.one));     // cube unite [-1, 1] -> demi-cotes
             }
             m_Cadree = false;
+            m_Ordre = template.m_RenderOrder;
+            m_Opacite = template.m_OpacityScale;
             // transitions : zones de fondu entre sequences voisines (toutes les sequences avec leurs images d'entrainement)
             var sq = rendu.sequences;
             bool fondu = crossfade && sq.Length > 1 && Array.TrueForAll(sq, x => x.trainImages > 0);
@@ -368,28 +465,17 @@ namespace GaussianSplatting4D.Runtime
                     if (z.fin >= z.debut) zones.Add(z);
                 }
             m_Zones = zones.ToArray();
-            m_Slots = new Slot[m_Zones.Length > 0 ? 3 : 2];
-            for (int i = 0; i < m_Slots.Length; ++i)
-            {
-                var go = Instantiate(template.gameObject, m_Cadre, false);
-                go.name = $"Sequence{i}";
-                go.SetActive(false);
-                // place et orientation : celles du lecteur (le modele peut avoir les siennes dans la scene)
-                go.transform.localPosition = Vector3.zero;
-                go.transform.localRotation = Quaternion.identity;
-                go.transform.localScale = Vector3.one;
-                var pl = go.GetComponent<Gaussian4DPlayer>();
-                pl.playOnStart = false;
-                pl.loop = false;
-                pl.temporalDataAsset = null;
-                m_Slots[i] = new Slot { go = go, renderer = go.GetComponent<Gaussian4DSplatRenderer>(), player = pl };
-                m_Slots[i].opacite = m_Slots[i].renderer.m_OpacityScale;
-                m_Slots[i].ordre = m_Slots[i].renderer.m_RenderOrder;
-                m_Slots[i].renderer.m_Asset = null;
-                m_Slots[i].renderer.m_Cutouts = m_Boite ? new[] { m_Boite } : null;
-            }
+            // appareil : budget memoire, preparations en parallele
+            m_BudgetMB = memoryBudgetMB > 0 ? memoryBudgetMB : Mobile
+                ? Mathf.Clamp(SystemInfo.systemMemorySize * 0.15f, 400, 1200)
+                : Mathf.Clamp(Mathf.Min(SystemInfo.graphicsMemorySize * 0.5f, SystemInfo.systemMemorySize * 0.25f), 1000, 8000);
+            m_NbDecodeurs = decoders > 0 ? decoders : Mobile ? 2 : Mathf.Clamp(SystemInfo.processorCount / 4, 2, 4);
+            stats.decoders = m_NbDecodeurs;
 
-            // son : toutes les pistes entierement chargees avant la lecture (un decodage au fil de l'eau decale le son)
+            // son : toutes les pistes entierement chargees avant la lecture (un decodage au fil de l'eau decale le son) ;
+            // la premiere sequence est preparee pendant ce temps
+            m_Time = 0;
+            Alimenter(0, 0);
             var pistes = rendu.sons_ogg != null && rendu.sons_ogg.Length > 0 ? rendu.sons_ogg : rendu.sons;
             if (rendu.sonsPlage != null && rendu.sonsPlage.Count > 0)
             {
@@ -424,88 +510,117 @@ namespace GaussianSplatting4D.Runtime
                     m_Audio.Add(src);
                 }
 
-            // premiere sequence avant de demarrer
-            yield return Prepare(m_Slots[0], 0);
-            if (state == State.Error) yield break;
-            Activate(m_Slots[0]);
-            StartClock(0);
-            state = State.Playing;
-
+            var chrono = System.Diagnostics.Stopwatch.StartNew();
+            double avant = chrono.Elapsed.TotalSeconds;
             while (true)
             {
-                double t = RenderTime();
-                if (t >= Duration)
-                {
-                    if (!loop) { PauseClock(Duration - 1e-4); state = State.Idle; status = "fin"; yield break; }
-                    StartClock(t % Duration);
-                    t = RenderTime();
-                }
-                currentFrame = (float)(t * rendu.fps);
-                int cur = SequenceAt(currentFrame);
-                int next = NextSequence(cur);
-
-                var slotCur = SlotFor(cur);
-                if (slotCur == null || slotCur.loading)
-                {
-                    // sequence pas prete : on attend, image et son figes
-                    if (state != State.Waiting) { PauseClock(t); state = State.Waiting; }
-                    if (slotCur == null) StartCoroutine(Prepare(FreeSlotExcept(-1), cur));
-                    status = $"chargement de la sequence {cur + 1}…";
-                    yield return null;
-                    continue;
-                }
-                if (!slotCur.go.activeSelf) Activate(slotCur);
-                if (state == State.Waiting) { StartClock(t); state = State.Playing; }
-
-                // emplacement de la suivante : prepare des que possible, active peu avant sa premiere image
-                var slotNext = SlotFor(next);
-                if (slotNext == null && next != cur)
-                {
-                    var libre = FreeSlotExcept(cur);
-                    if (libre != null) StartCoroutine(Prepare(libre, next));
-                }
-                else if (slotNext != null && !slotNext.loading && !slotNext.go.activeSelf && next != cur)
-                {
-                    float avant = (Visible(next) - currentFrame) / rendu.fps;
-                    if (avant < 0) avant += Duration;
-                    if (avant <= activateAhead) Activate(slotNext);
-                }
-
-                // transition : dans la zone de deux sequences voisines, les deux sont dessinees, chacune avec son poids
-                // (image entamee, comme le site) ; l'autre sequence est activee si elle ne l'est pas encore
-                var zone = ZoneAt((int)currentFrame);
-                if (zone != null)
-                    foreach (int k in new[] { zone.a, zone.a + 1 })
-                    {
-                        var sk = SlotFor(k);
-                        if (sk != null && !sk.loading && !sk.go.activeSelf) Activate(sk);
-                    }
-
-                // temps des modeles : temps normalise de la prise (image g a g / (total - 1)), comme le lecteur du site
-                float u = currentFrame / Mathf.Max(rendu.total - 1, 1);
-                Vector3 marche = rendu.trajectoire != null ? rendu.trajectoire.A((float)t, rendu.fps) : Vector3.zero;
-                foreach (var s in m_Slots)
-                    if (s.go.activeSelf)
-                    {
-                        s.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
-                        s.player.previewTime = u;
-                        // seule la sequence en cours est dessinee ; la suivante attend sur le GPU (avant : dessinee
-                        // aussi, en permanence pour un rendu de deux sequences en boucle, deux fois plus de gaussiennes) ;
-                        // dans une transition, les deux sequences de la zone
-                        bool dansZone = zone != null && (s.seq == zone.a || s.seq == zone.a + 1);
-                        s.renderer.suspended = s.seq != cur && !dansZone;
-                        // poids du fondu : la sequence qui apparait ou s'efface est dessinee devant l'autre (pleine),
-                        // d'ou un fondu enchaine ; hors transition, reglages du modele
-                        float w = dansZone ? Poids(zone, (int)currentFrame, s.seq == zone.a) : 1f;
-                        s.renderer.m_OpacityScale = s.opacite * w;
-                        s.renderer.m_RenderOrder = s.ordre + (w < 1f ? 1 : 0);
-                        // une sequence finie est retiree (sauf si c'est aussi la suivante, rendu a une sequence, ou si
-                        // elle est encore dans une transition)
-                        if (s.seq != cur && s.seq != next && !dansZone) Deactivate(s);
-                    }
-                status = $"sequence {cur + 1}/{rendu.sequences.Length} · image {(int)currentFrame}/{rendu.total}";
+                if (state == State.Error) yield break;
+                double maintenant = chrono.Elapsed.TotalSeconds;
+                float dt = (float)Math.Min(maintenant - avant, 0.1);
+                avant = maintenant;
+                if (dt > 0) m_DureeImage = 0.9f * m_DureeImage + 0.1f * dt;
+                Image(dt);
                 yield return null;
             }
+        }
+
+        // ---- une image : horloge, fenetre de sequences, envois au GPU, ce qui est dessine
+        void Image(float dt)
+        {
+            int n = rendu.sequences.Length;
+            float frame = (float)(m_Time * rendu.fps);
+            int k = SequenceAt(frame);
+            // derniere chance : ce qui doit etre dessine maintenant et n'est pas encore entierement envoye
+            if (m_Pret) FinirSiNecessaire(frame, k);
+            if (!Dessinable(frame, k))
+            {
+                if (m_Pret && !m_Attente) { m_Attente = true; stats.waits++; StopAudio(); state = State.Waiting; }
+                status = $"chargement de la sequence {k + 1}…";
+            }
+            else
+            {
+                if (!m_Pret || m_Attente)
+                {
+                    m_Pret = true; m_Attente = false; state = State.Playing;
+                    if (!m_Paused) StartAudio(m_Time);
+                }
+                if (!m_Paused)
+                {
+                    Avancer(dt);
+                    if (m_Time >= Duration)
+                    {
+                        if (loop) { m_Time %= Duration; StartAudio(m_Time); }
+                        else { m_Time = Duration - 1e-4; Pause(); state = State.Idle; status = "fin"; }
+                    }
+                    frame = (float)(m_Time * rendu.fps);
+                    k = SequenceAt(frame);
+                    FinirSiNecessaire(frame, k);
+                }
+            }
+            currentFrame = frame;
+
+            // fenetre de sequences en avance (preparations, jonctions), envois au GPU par morceaux, une activation
+            Alimenter(k, frame);
+            Envoyer(k);
+
+            // ce qui est dessine : dans un recouvrement, sa jonction (les deux sequences, poids continus), sinon la
+            // sequence k ; sans jonction prete, les deux sequences fondues l'une sur l'autre (repli)
+            var zone = m_Zones.Length > 0 ? ZoneAt((int)frame) : null;
+            var J = zone != null ? Prete(kJonction + zone.a) : null;
+            float s = zone != null ? Mathf.Clamp01((frame - zone.debut) / Mathf.Max(1, zone.fin + 1 - zone.debut)) : 0;
+            var A = zone != null && J == null ? Prete(zone.a) : null;
+            var B = zone != null && J == null ? Prete(zone.a + 1) : null;
+            bool repli = A != null && B != null;
+            float u = frame / Mathf.Max(rendu.total - 1, 1);
+            Vector3 marche = rendu.trajectoire != null ? rendu.trajectoire.A((float)m_Time, rendu.fps) : Vector3.zero;
+            foreach (var e in m_Entrees.Values)
+            {
+                if (e.etape != Etape.Pret || e.pion == null) continue;
+                var r = e.pion.renderer;
+                bool dessine;
+                if (J != null) dessine = e == J;
+                else if (repli) dessine = e == A || e == B;
+                else dessine = !e.jonction && e.cle == k;
+                r.suspended = !dessine;
+                e.pion.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
+                e.pion.player.previewTime = u;
+                if (dessine && e == J) { r.junctionSplit = e.split; r.junctionWeights = new Vector2(1 - s, s); r.m_RenderOrder = m_Ordre; }
+                else if (dessine && repli)
+                {
+                    // repli (jonction pas prete) : deux modeles tries separement, le plus faible dessine devant
+                    float w = e == A ? 1 - s : s;
+                    r.junctionSplit = int.MaxValue; r.junctionWeights = new Vector2(w, w);
+                    r.m_RenderOrder = m_Ordre + (w < 0.5f ? 1 : 0);
+                }
+                else { r.junctionSplit = 0; r.junctionWeights = Vector2.one; r.m_RenderOrder = m_Ordre; }
+            }
+            if (m_Pret && !m_Attente)
+                status = J != null ? $"sequences {zone.a + 1}-{zone.a + 2}/{n} (fondu) · image {(int)frame}/{rendu.total}"
+                                   : $"sequence {k + 1}/{n} · image {(int)frame}/{rendu.total}";
+        }
+
+        Entree Prete(int cle) => m_Entrees.TryGetValue(cle, out var e) && e.etape == Etape.Pret && e.pion != null ? e : null;
+
+        bool Dessinable(float frame, int k)
+        {
+            var z = m_Zones.Length > 0 ? ZoneAt((int)frame) : null;
+            if (z != null && Prete(kJonction + z.a) != null) return true;
+            return Prete(k) != null;
+        }
+
+        // ce qui doit etre dessine maintenant (jonction de la zone si elle est deja preparee, sinon la sequence) fini
+        // d'un coup s'il est encore en cours d'envoi (compte : stats.forcedUploads)
+        void FinirSiNecessaire(float frame, int k)
+        {
+            if (Dessinable(frame, k)) return;
+            var z = m_Zones.Length > 0 ? ZoneAt((int)frame) : null;
+            Entree e = null;
+            if (z != null && m_Entrees.TryGetValue(kJonction + z.a, out var j) && j.etape == Etape.Envoi) e = j;
+            else if (m_Entrees.TryGetValue(k, out var c) && c.etape == Etape.Envoi) e = c;
+            if (e == null) return;
+            e.asset.gpuData.Upload(long.MaxValue);
+            stats.forcedUploads++;
+            Activer(e);
         }
 
         int SequenceAt(float frame)
@@ -516,48 +631,86 @@ namespace GaussianSplatting4D.Runtime
             return 0;
         }
 
-        // premiere image ou la sequence est dessinee : debut de sa transition d'entree, sinon son cœur
-        int Visible(int i)
-        {
-            var s = rendu.sequences[i];
-            return m_Zones.Length > 0 && i > 0 ? Mathf.Min(s.premiere, s.trainPremiere) : s.premiere;
-        }
-
         Zone ZoneAt(int frame)
         {
             foreach (var z in m_Zones) if (frame >= z.debut && frame <= z.fin) return z;
             return null;
         }
 
-        // poids d'opacite a l'image f de la zone (meme loi que la visionneuse du site) : jusqu'a J, la suivante apparait
-        // (1/(n+1) … n/(n+1)) sur la precedente pleine ; apres J, la precedente s'efface sur la suivante pleine
-        static float Poids(Zone z, int f, bool precedente)
+        // secondes de lecture avant que l'entree soit necessaire (sens de lecture, boucle comprise) ; -1 : maintenant
+        float NecessaireDans(Entree e, int k)
         {
-            int avant = z.J - z.debut + 1, apres = z.fin - z.J;
-            if (f <= z.J) return precedente ? 1f : (f - z.debut + 1f) / (avant + 1f);
-            return precedente ? 1f - (f - z.J) / (apres + 1f) : 1f;
+            if (!e.jonction && e.cle == k) return -1;
+            float debut;
+            if (e.jonction) { var z = Array.Find(m_Zones, x => x.a == e.a); debut = z != null ? z.debut : 0; }
+            else debut = e.cle > 0 && m_Zones.Length > 0 ? Mathf.Min(rendu.sequences[e.cle].premiere, rendu.sequences[e.cle].trainPremiere) : rendu.sequences[e.cle].premiere;
+            float d = Mathf.Max(Duration, 1e-3f), t = debut / rendu.fps - (float)m_Time;
+            return ((t % d) + d) % d;
         }
 
-        int NextSequence(int i) => i + 1 < rendu.sequences.Length ? i + 1 : (loop ? 0 : i);
-
-        Slot SlotFor(int seq)
+        // Fenetre de sequences gardees a partir de k (ordre de lecture, boucle), jonctions entre elles et celle en
+        // cours ; le reste libere ; preparations lancees dans cet ordre (un telechargement a la fois, au plus
+        // m_NbDecodeurs preparations)
+        void Alimenter(int k, float frame)
         {
-            foreach (var s in m_Slots) if (s.seq == seq) return s;
-            return null;
+            int n = rendu.sequences.Length, cap = Math.Max(2, m_Capacite > 0 ? m_Capacite : 2);
+            var fenetre = new List<int>(cap);
+            for (int i = 0; i < Math.Min(cap, n); i++)
+            {
+                int j = k + i;
+                if (j >= n) { if (!loop) break; j %= n; }
+                if (!fenetre.Contains(j)) fenetre.Add(j);
+            }
+            var garder = new HashSet<int>(fenetre);
+            foreach (var z in m_Zones)
+            {
+                if (garder.Contains(z.a) && garder.Contains(z.a + 1)) garder.Add(kJonction + z.a);
+                else if (garder.Contains(z.a + 1) && frame >= z.debut && frame < z.fin + 1) garder.Add(kJonction + z.a);   // fondu en cours
+            }
+            List<int> partir = null;
+            foreach (var cle in m_Entrees.Keys) if (!garder.Contains(cle)) (partir ??= new List<int>()).Add(cle);
+            if (partir != null)
+                foreach (var cle in partir) { Liberer(m_Entrees[cle]); m_Entrees.Remove(cle); }
+
+            // jonctions : des que les deux sequences voisines sont preparees
+            foreach (var z in m_Zones)
+            {
+                int cj = kJonction + z.a;
+                if (!garder.Contains(cj) || m_Entrees.ContainsKey(cj)) continue;
+                if (m_Entrees.TryGetValue(z.a, out var ea) && m_Entrees.TryGetValue(z.a + 1, out var eb) && ea.prep != null && eb.prep != null
+                    && EnCours() < m_NbDecodeurs)
+                    StartCoroutine(PreparerJonction(z, ea.prep, eb.prep));
+            }
+            // donnees preparees inutiles : envoi fini et jonctions voisines commencees (ou sans objet)
+            foreach (var e in m_Entrees.Values)
+                if (!e.jonction && e.prep != null && e.etape == Etape.Pret && !JonctionAttendue(e.cle, garder)) e.prep = null;
+
+            bool telechargement = false;
+            foreach (var e in m_Entrees.Values) telechargement |= e.telechargement;
+            if (telechargement || EnCours() >= m_NbDecodeurs) return;
+            foreach (int j in fenetre)
+                if (!m_Entrees.ContainsKey(j)) { StartCoroutine(Preparer(j)); break; }
         }
 
-        Slot FreeSlotExcept(int keep)
+        int EnCours()
         {
-            foreach (var s in m_Slots) if (s.seq < 0 && !s.loading) return s;
-            foreach (var s in m_Slots) if (s.seq != keep && !s.loading && !s.go.activeSelf) { FreeSlot(s); return s; }
-            return null;
+            int c = 0;
+            foreach (var e in m_Entrees.Values) if (e.etape == Etape.Chargement) c++;
+            return c;
         }
 
-        IEnumerator Prepare(Slot slot, int seq)
+        // la sequence k doit-elle garder ses donnees preparees pour une jonction a venir ?
+        bool JonctionAttendue(int k, HashSet<int> garder)
         {
-            if (slot == null || slot.loading) yield break;
-            slot.loading = true;
-            slot.seq = seq;
+            foreach (var z in m_Zones)
+                if ((z.a == k || z.a + 1 == k) && garder.Contains(kJonction + z.a) && !m_Entrees.ContainsKey(kJonction + z.a)) return true;
+            return false;
+        }
+
+        IEnumerator Preparer(int seq)
+        {
+            var e = new Entree { cle = seq, etape = Etape.Chargement, gen = m_Gen };
+            m_Entrees[seq] = e;
             var info = rendu.sequences[seq];
             string path = info.url;
             if (info.octets > 0)
@@ -566,10 +719,12 @@ namespace GaussianSplatting4D.Runtime
                 path = CachePath(info.url.Split('?')[0] + "_" + info.offset) + (info.format == "trgz" ? ".trgz" : ".ftgsz");   // HD 4DGS : .trgz
                 if (!File.Exists(path))
                 {
-                    status = $"telechargement de la sequence {seq + 1}…";
+                    e.telechargement = true;
                     string err = null;
-                    yield return Extraire(info.url, info.offset, info.octets, path, e => err = e);
-                    if (err != null) { Fail($"sequence {seq + 1} : {err}"); slot.loading = false; yield break; }
+                    yield return Extraire(info.url, info.offset, info.octets, path, x => err = x);
+                    e.telechargement = false;
+                    if (e.gen != m_Gen) yield break;
+                    if (err != null) { Fail($"sequence {seq + 1} : {err}"); yield break; }
                     m_Downloaded.Add(path);
                 }
             }
@@ -578,89 +733,224 @@ namespace GaussianSplatting4D.Runtime
                 path = CachePath(info.url);
                 if (!File.Exists(path))
                 {
-                    status = $"telechargement de la sequence {seq + 1}…";
+                    e.telechargement = true;
                     using var req = new UnityWebRequest(info.url, UnityWebRequest.kHttpVerbGET) { downloadHandler = new DownloadHandlerFile(path + ".part") { removeFileOnAbort = true } };
                     if (!string.IsNullOrEmpty(userAgent)) req.SetRequestHeader("User-Agent", userAgent);
                     yield return req.SendWebRequest();
-                    if (req.result != UnityWebRequest.Result.Success) { Fail($"sequence {seq + 1} : {req.error}"); slot.loading = false; yield break; }
+                    e.telechargement = false;
+                    if (e.gen != m_Gen) yield break;
+                    if (req.result != UnityWebRequest.Result.Success) { Fail($"sequence {seq + 1} : {req.error}"); yield break; }
                     File.Move(path + ".part", path);
                     m_Downloaded.Add(path);
                 }
             }
+            // preparation, recalage dans la video et fenetres sur un fil d'arriere-plan
             var chrono = System.Diagnostics.Stopwatch.StartNew();
-            var task = GaussianSplatRuntimeLoader.PrepareAsync(path, quality);
+            int total = rendu.total;
+            bool zones = m_Zones.Length > 0;
+            int maxSH = skipUnusedSH ? Mathf.Clamp(template.m_SHOrder, 0, 3) : 3;
+            var task = GaussianSplatRuntimeLoader.PrepareAsync(path, quality, p =>
+            {
+                if (p.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs) RecalerTrigs(p, info, total);
+                if (zones) ElargirFenetre(p, info, total);
+                GaussianSplatRuntimeLoader.ComputePlayWindow(p);
+            }, maxSH);
             while (!task.IsCompleted) yield return null;
-            if (task.IsFaulted) { Fail($"sequence {seq + 1} : {task.Exception?.GetBaseException().Message}"); slot.loading = false; yield break; }
+            if (e.gen != m_Gen || !m_Entrees.TryGetValue(seq, out var deja) || deja != e) yield break;    // fermee ou liberee entre-temps
+            if (task.IsFaulted) { Fail($"sequence {seq + 1} : {task.Exception?.GetBaseException().Message}"); yield break; }
             lastPrepareSeconds = (float)chrono.Elapsed.TotalSeconds;
-            if (task.Result.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs) RecalerTrigs(task.Result, info);
-            if (m_Zones.Length > 0) ElargirFenetre(task.Result, info);
-            slot.asset = GaussianSplatRuntimeLoader.CreateAsset(task.Result);
-            if (!m_Cadree) { ApplyCadrage(task.Result.robustMin, task.Result.robustMax); m_Cadree = true; }
-            slot.loading = false;
+            var prep = task.Result;
+            if (!m_Cadree) { ApplyCadrage(prep.robustMin, prep.robustMax); m_Cadree = true; }
+            Monter(e, prep);
+            e.prep = prep;
+            // capacite : sequences gardees selon le budget memoire, connue des la premiere preparee
+            if (m_OctetsSequence == 0)
+            {
+                m_OctetsSequence = e.octets;
+                stats.sequenceMB = e.octets / 1048576f;
+                long parSeq = e.octets * (m_Zones.Length > 0 ? 2 : 1);
+                m_Capacite = Mathf.Clamp((int)(m_BudgetMB * 1048576.0 / Math.Max(1, parSeq)), 2, rendu.sequences.Length);
+                stats.capacity = m_Capacite;
+            }
+        }
+
+        IEnumerator PreparerJonction(Zone z, GaussianSplatRuntimeLoader.Prepared A, GaussianSplatRuntimeLoader.Prepared B)
+        {
+            int cle = kJonction + z.a;
+            var e = new Entree { cle = cle, a = z.a, etape = Etape.Chargement, gen = m_Gen };
+            m_Entrees[cle] = e;
+            var sq = rendu.sequences;
+            float frame = 1f / Mathf.Max(rendu.total - 1, 1);
+            // fenetres des cotes : chacun depuis le debut de son entrainement / jusqu'a sa fin, l'autre borne sur la zone
+            // (la jonction n'est dessinee que dedans) ; memes marges que les autres fenetres
+            var zz = new GaussianSplatJunction.Zone
+            {
+                uStart = (z.debut - 0.5f) * frame, uEnd = (z.fin + 0.5f) * frame,
+                winA0 = sq[z.a].trainPremiere * frame - 0.01f * frame, winA1 = z.fin * frame + 0.99f * frame,
+                winB0 = z.debut * frame - 0.01f * frame, winB1 = (sq[z.a + 1].trainPremiere + sq[z.a + 1].trainImages - 1) * frame + 0.99f * frame,
+            };
+            int split = 0;
+            var task = Task.Run(() => GaussianSplatJunction.Merge(A, B, zz, out split));
+            while (!task.IsCompleted) yield return null;
+            if (e.gen != m_Gen || !m_Entrees.TryGetValue(cle, out var deja) || deja != e) yield break;
+            if (task.IsFaulted || task.Result == null)
+            {
+                // pas de jonction (formats differents, memoire) : repli sur les deux modeles separes
+                if (task.IsFaulted) Debug.LogWarning($"[Gaussian4DSequencePlayer] jonction {z.a + 1}-{z.a + 2} : {task.Exception?.GetBaseException().Message}");
+                e.etape = Etape.Pret;           // entree vide gardee : pas de nouvel essai
+                yield break;
+            }
+            e.split = split;
+            stats.junctions++;
+            Monter(e, task.Result);
+        }
+
+        // donnees preparees -> asset dont l'envoi au GPU par morceaux commence (aucun envoi ici)
+        void Monter(Entree e, GaussianSplatRuntimeLoader.Prepared p)
+        {
+            e.asset = GaussianSplatRuntimeLoader.CreateAssetGpu(p);
+            e.octets = e.asset.gpuData.totalBytes;
+            e.etape = Etape.Envoi;
+        }
+
+        // Envois de l'image : morceaux des entrees en attente du GPU, la plus proche d'abord, dans un budget regle sur le
+        // cout mesure (≈ uploadMsPerFrame ; bureau 8 a 96 Mo, mobile 4 a 32 Mo), augmente jusqu'a 3 fois quand la
+        // prochaine risque de ne pas etre prete activateAhead s avant son tour (4 fois avant le depart) ; puis une
+        // activation (renderer adopte les donnees) par image
+        readonly List<Entree> m_Liste = new();
+        void Envoyer(int k)
+        {
+            m_Liste.Clear();
+            foreach (var e in m_Entrees.Values) if (e.etape == Etape.Envoi && e.asset != null) m_Liste.Add(e);
+            if (m_Liste.Count == 0) { stats.uploadMs = 0; return; }
+            m_Liste.Sort((x, y) => NecessaireDans(x, k).CompareTo(NecessaireDans(y, k)));
+            const double Mo = 1048576.0;
+            double lo = (Mobile ? 4 : 8) * Mo, hi = (Mobile ? 32 : 96) * Mo;
+            double normal = Math.Min(hi, Math.Max(lo, uploadMsPerFrame / Math.Max(1e-3, m_MsParMo) * Mo));
+            double budget = m_Pret ? normal : 4 * normal;
+            if (m_Pret && !m_Paused)
+            {
+                double images = (NecessaireDans(m_Liste[0], k) - activateAhead) / Math.Max(1.0 / 120, m_DureeImage);
+                budget = Math.Min(3 * normal, Math.Max(budget, m_Liste[0].asset.gpuData.remainingBytes / Math.Max(1, images)));
+            }
+            stats.uploadBudgetMB = (float)(budget / Mo);
+            var chrono = System.Diagnostics.Stopwatch.StartNew();
+            long fait = 0;
+            Entree finie = null;
+            foreach (var e in m_Liste)
+            {
+                if (fait >= budget) break;
+                var g = e.asset.gpuData;
+                if (!g.complete) fait += g.Upload((long)(budget - fait));
+                if (g.complete && finie == null) finie = e;
+            }
+            double ms = chrono.Elapsed.TotalMilliseconds;
+            stats.uploadMB += (float)(fait / Mo);
+            stats.uploadMs = (float)ms;
+            if (fait >= Mo) m_MsParMo = 0.8 * m_MsParMo + 0.2 * Math.Min(20, ms / (fait / Mo));
+            // une activation par image (la plus proche entierement envoyee)
+            if (finie != null) Activer(finie);
+        }
+
+        // modele entierement envoye : objet de rendu actif (adopte les donnees GPU), cache jusqu'a son tour
+        void Activer(Entree e)
+        {
+            if (e.etape == Etape.Pret) return;
+            var chrono = System.Diagnostics.Stopwatch.StartNew();
+            var p = PrendrePion();
+            e.pion = p;
+            p.renderer.m_Asset = e.asset;
+            p.renderer.suspended = true;
+            p.renderer.junctionSplit = 0;
+            p.renderer.junctionWeights = Vector2.one;
+            p.renderer.m_OpacityScale = m_Opacite;
+            p.player.temporalDataAsset = null;
+            p.player.previewTime = currentFrame / Mathf.Max(rendu.total - 1, 1);
+            p.go.SetActive(true);                                  // Gaussian4DSplatRenderer.OnEnable : adoption, sans envoi
+            p.player.SetTemporalData(null);                        // buffer temporel de l'asset (deja sur le GPU)
+            e.etape = Etape.Pret;
+            stats.activateMs = (float)chrono.Elapsed.TotalMilliseconds;
+        }
+
+        Pion PrendrePion()
+        {
+            if (m_Pions.Count > 0) return m_Pions.Pop();
+            var go = Instantiate(template.gameObject, m_Cadre, false);
+            go.name = $"Sequence{m_TousPions.Count}";
+            go.SetActive(false);
+            // place et orientation : celles du lecteur (le modele peut avoir les siennes dans la scene)
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+            var pl = go.GetComponent<Gaussian4DPlayer>();
+            pl.playOnStart = false;
+            pl.loop = false;
+            pl.temporalDataAsset = null;
+            var r = go.GetComponent<Gaussian4DSplatRenderer>();
+            r.m_Asset = null;
+            r.m_Cutouts = m_Boite ? new[] { m_Boite } : null;
+            var pion = new Pion { go = go, renderer = r, player = pl };
+            m_TousPions.Add(pion);
+            return pion;
+        }
+
+        void Liberer(Entree e)
+        {
+            var chrono = System.Diagnostics.Stopwatch.StartNew();
+            if (e.pion != null)
+            {
+                var p = e.pion;
+                if (p.go)
+                {
+                    p.go.SetActive(false);
+                    p.renderer.m_Asset = null;
+                    p.renderer.suspended = false;
+                    p.renderer.junctionSplit = 0;
+                    p.renderer.junctionWeights = Vector2.one;
+                    p.renderer.m_RenderOrder = m_Ordre;
+                    m_Pions.Push(p);
+                }
+                e.pion = null;
+            }
+            GaussianSplatRuntimeLoader.DestroyAsset(e.asset);
+            e.asset = null;
+            e.prep = null;
+            stats.releaseMs = (float)chrono.Elapsed.TotalMilliseconds;
         }
 
         // transition : chaque gaussienne porte la fenetre du cœur de sa sequence (seg_start / seg_end) ; elle est elargie
         // aux images d'entrainement pour que la sequence reste visible pendant ses transitions (meme marge que
-        // GaussianSplatAssetBuilder : de f - 1 % a f + 99 % de frame)
-        void ElargirFenetre(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info)
+        // GaussianSplatAssetBuilder : de f - 1 % a f + 99 % de frame). Fil d'arriere-plan.
+        static void ElargirFenetre(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info, int total)
         {
             bool trigs = p.temporalFormat == GaussianSplatAsset.TemporalFormat.Trigs;
             if (info.trainImages <= 0 || p.temporal == null || (p.temporalFormat != GaussianSplatAsset.TemporalFormat.FreeTimeGS && !trigs)) return;
-            int n = trigs ? rendu.total : p.temporalFrames > 1 ? p.temporalFrames : rendu.total;
+            int n = trigs ? total : p.temporalFrames > 1 ? p.temporalFrames : total;
             float frame = 1f / Mathf.Max(n - 1, 1);
             float a = info.trainPremiere * frame - 0.01f * frame, b = (info.trainPremiere + info.trainImages - 1) * frame + 0.99f * frame;
-            var ba = BitConverter.GetBytes(a); var bb = BitConverter.GetBytes(b);
             int stride = trigs ? GaussianSplatAsset.kTemporalStrideTrigs : 32, ow = trigs ? 92 : 20;
-            for (int i = 0; i + stride <= p.temporal.Length; i += stride)
-            {
-                Buffer.BlockCopy(ba, 0, p.temporal, i + ow, 4);
-                Buffer.BlockCopy(bb, 0, p.temporal, i + ow + 4, 4);
-            }
+            var f = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(new Span<byte>(p.temporal, 0, p.temporal.Length / stride * stride));
+            int fs = stride / 4, fo = ow / 4;
+            for (int i = fo; i + 1 < f.Length; i += fs) { f[i] = a; f[i + 1] = b; }
         }
 
         // HD 4DGS (.trgz) : place de la sequence dans la video (premiere image, nombre d'images du rendu) ecrite dans
-        // chaque enregistrement (u0, tScale, fenetre) ; temps du modele = (temps video - u0) * tScale
-        void RecalerTrigs(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info)
+        // chaque enregistrement (u0, tScale, fenetre) ; temps du modele = (temps video - u0) * tScale. Fil d'arriere-plan.
+        static void RecalerTrigs(GaussianSplatRuntimeLoader.Prepared p, SequenceInfo info, int total)
         {
-            if (p.temporal == null || rendu.total < 2) return;
+            if (p.temporal == null || total < 2) return;
             int stride = GaussianSplatAsset.kTemporalStrideTrigs;
-            float frame = 1f / (rendu.total - 1);
+            float frame = 1f / (total - 1);
             // transition (21/11/2026) : temps du modele compte depuis la premiere image d'ENTRAINEMENT
             float u0 = (info.trainImages > 0 ? info.trainPremiere : info.premiere) * frame;
             float a = info.premiere * frame - 0.01f * frame, b = (info.premiere + info.images - 1) * frame + 0.99f * frame;
-            for (int i = 0; i + stride <= p.temporal.Length; i += stride)
+            var f = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(new Span<byte>(p.temporal, 0, p.temporal.Length / stride * stride));
+            for (int i = 0; i + 28 <= f.Length; i += 28)
             {
-                float fpsModele = (p.temporalFrames - 1) / Mathf.Max(BitConverter.ToSingle(p.temporal, i + 100), 1e-6f);
-                float tScale = (rendu.total - 1) / Mathf.Max(fpsModele, 1e-3f);
-                Buffer.BlockCopy(BitConverter.GetBytes(a), 0, p.temporal, i + 92, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(b), 0, p.temporal, i + 96, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(tScale), 0, p.temporal, i + 100, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(u0), 0, p.temporal, i + 108, 4);
+                float fpsModele = (p.temporalFrames - 1) / Mathf.Max(f[i + 25], 1e-6f);
+                float tScale = (total - 1) / Mathf.Max(fpsModele, 1e-3f);
+                f[i + 23] = a; f[i + 24] = b; f[i + 25] = tScale; f[i + 27] = u0;
             }
-        }
-
-        void Activate(Slot s)
-        {
-            s.go.SetActive(false);
-            s.renderer.m_Asset = s.asset;
-            s.player.temporalDataAsset = s.asset.temporalData;   // lu des la premiere activation (Awake)
-            s.go.SetActive(true);                                  // envoi au GPU (Gaussian4DSplatRenderer.OnEnable)
-            s.player.previewTime = currentFrame / Mathf.Max(rendu.total - 1, 1);
-            s.player.SetTemporalData(s.asset.temporalData);
-        }
-
-        void Deactivate(Slot s)
-        {
-            s.go.SetActive(false);
-            FreeSlot(s);
-        }
-
-        static void FreeSlot(Slot s)
-        {
-            if (s.go) { s.go.SetActive(false); s.renderer.m_Asset = null; s.renderer.m_OpacityScale = s.opacite; s.renderer.m_RenderOrder = s.ordre; }
-            GaussianSplatRuntimeLoader.DestroyAsset(s.asset);
-            s.asset = null;
-            s.seq = -1;
         }
 
         static Vector3 V3(float[] a, Vector3 defaut) => a != null && a.Length == 3 ? new Vector3(a[0], a[1], a[2]) : defaut;
@@ -719,28 +1009,74 @@ namespace GaussianSplatting4D.Runtime
             Debug.LogError("[Gaussian4DSequencePlayer] " + message);
         }
 
-        // ---- horloge : carte son (dspTime) ; son decale de decalage_son par rapport a l'image 0 du rendu
-        double RenderTime() => m_PausedAt >= 0 ? m_PausedAt : Now - m_ClockStart;
+        // ---- horloge. Le son, quand il est entendu, mene : le temps suit l'ecran et rattrape le son en douceur
+        // (vitesse ±25 % au plus, proportionnelle a l'ecart) jusqu'a 1 s d'ecart ; il ne saute qu'au depart (lecture,
+        // deplacement, boucle, reprise) ou au-dela de 1 s ; une image a plus de 1 s d'avance attend le son. Il ne recule
+        // jamais pendant la lecture. Sans son entendu : le temps des images. Position du son : horloge de la carte son
+        // (AudioSettings.dspTime, avancee par paquets) prolongee entre ses changements.
+        double m_Time;               // temps du rendu (s)
+        bool m_AudioOn, m_Sync;
+        double m_AudioDsp, m_AudioPos;     // depart programme des pistes (dspTime) et temps du rendu a ce depart
+        double m_DernierDsp = -1, m_DernierDspReel;
 
-        void StartClock(double renderTime)
+        void StartAudio(double renderTime)
         {
-            double debut = Now + 0.05;                 // depart commun de toutes les pistes
-            m_ClockStart = debut - renderTime;
-            m_PausedAt = -1;
+            m_AudioOn = false;
+            double debut = AudioSettings.dspTime + 0.05;          // depart commun de toutes les pistes
             foreach (var a in m_Audio)
             {
+                if (!a) continue;
                 a.Stop();
                 double ts = renderTime + rendu.decalage_son;
                 if (a.clip == null || ts >= a.clip.length) continue;
                 a.time = (float)Math.Max(ts, 0);
                 a.PlayScheduled(debut + Math.Max(-ts, 0));
+                m_AudioOn = true;
             }
+            m_AudioDsp = debut;
+            m_AudioPos = renderTime;
+            m_Sync = true;
         }
 
-        void PauseClock(double renderTime)
+        void StopAudio()
         {
-            m_PausedAt = renderTime;
-            foreach (var a in m_Audio) a.Stop();
+            foreach (var a in m_Audio) if (a) a.Stop();
+            m_AudioOn = false;
+        }
+
+        // temps du rendu correspondant au son entendu
+        double Heard()
+        {
+            double dsp = AudioSettings.dspTime, reel = Time.realtimeSinceStartupAsDouble;
+            if (dsp != m_DernierDsp) { m_DernierDsp = dsp; m_DernierDspReel = reel; }
+            double p = m_DernierDsp + Math.Min(Math.Max(0, reel - m_DernierDspReel), 0.25);
+            return m_AudioPos + (p - m_AudioDsp);
+        }
+
+        void Avancer(float dt)
+        {
+            // son entendu : au moins une piste en lecture (ou programmee)
+            if (m_AudioOn && !m_Audio.Exists(a => a && a.isPlaying)) m_AudioOn = false;
+            if (!m_AudioOn) { m_Time += dt; return; }
+            double cible = Heard(), prevu = m_Time + dt, e = cible - prevu;
+            if (m_Sync)
+            {
+                // depart, deplacement, boucle, reprise : sur le son (sans pas en arriere s'il est proche)
+                m_Time = Math.Abs(cible - m_Time) > 0.5 ? cible : Math.Max(m_Time, cible);
+                m_Sync = false;
+            }
+            else if (e > 1)
+            {
+                m_Time = Math.Max(m_Time, cible);                  // plus de 1 s de retard : saut
+                stats.hardSyncs++;
+            }
+            else if (e >= -1)
+            {
+                double corr = Math.Max(-0.25 * dt, Math.Min(0.25 * dt, 0.08 * e));
+                if (Math.Abs(corr) > 0.02 * dt) stats.softSyncFrames++;
+                m_Time = Math.Max(m_Time, prevu + corr);
+            }
+            // sinon : plus de 1 s d'avance, l'image attend le son
         }
 
         // ---- fichiers

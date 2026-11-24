@@ -98,18 +98,38 @@ namespace GaussianSplatting4D.Runtime.Utils
             ReadFile(filePath, out splats, out _, out _);
         }
 
-        public static unsafe void ReadFile(string filePath, out NativeArray<InputSplatData> splats, out TemporalKind temporalKind, out FtgsHeaderInfo ftgsInfo)
+        public static void ReadFile(string filePath, out NativeArray<InputSplatData> splats, out TemporalKind temporalKind, out FtgsHeaderInfo ftgsInfo)
+        {
+            ReadFile(filePath, out splats, out temporalKind, out ftgsInfo, 3);
+        }
+
+        // maxSHDegree < 3 : .ftgsz / .trgz sans les flux de couleurs au-dela de ce degre (coefficients a 0)
+        public static unsafe void ReadFile(string filePath, out NativeArray<InputSplatData> splats, out TemporalKind temporalKind, out FtgsHeaderInfo ftgsInfo, int maxSHDegree)
         {
             temporalKind = TemporalKind.None;
             ftgsInfo = default;
             string decode = null;
+            bool enMemoire = false;
             if (FtgszFileReader.IsFtgsz(filePath))
-                filePath = decode = FtgszFileReader.ResolveToPly(filePath);       // FreeTimeGS ou 4C4D compresse
-            if (isPLY(filePath))
+            {
+                // application (ou flux sautes) : decode en memoire, sans PLY intermediaire sur le disque (24/11/2026) ;
+                // editeur : PLY decode garde dans Library/Ftgsz
+                if (FtgszFileReader.inMemory || FtgszFileReader.DeleteAfterRead || maxSHDegree < 3) enMemoire = true;
+                else filePath = decode = FtgszFileReader.ResolveToPly(filePath);       // FreeTimeGS ou 4C4D compresse
+            }
+            if (enMemoire || isPLY(filePath))
             {
                 NativeArray<byte> plyRawData;
                 List<(string, PLYFileReader.ElementType)> attributes;
-                PLYFileReader.ReadFile(filePath, out var splatCount, out var vertexStride, out attributes, out var comments, out plyRawData);
+                int splatCount, vertexStride;
+                Dictionary<string, string> comments;
+                if (enMemoire)
+                {
+                    FtgszFileReader.DecodeToMemory(filePath, maxSHDegree, out var entete, out plyRawData);
+                    PLYFileReader.ReadHeader(entete, filePath, out splatCount, out vertexStride, out attributes, out comments);
+                }
+                else
+                    PLYFileReader.ReadFile(filePath, out splatCount, out vertexStride, out attributes, out comments, out plyRawData);
                 if (decode != null && FtgszFileReader.DeleteAfterRead)
                     File.Delete(decode);                                       // application : rien ne reste sur l'appareil
                 temporalKind = DetectTemporalKind(attributes);
@@ -118,7 +138,10 @@ namespace GaussianSplatting4D.Runtime.Utils
                 string attrError = CheckPLYAttributes(attributes);
                 if (!string.IsNullOrEmpty(attrError))
                     throw new IOException($"PLY file is probably not a Gaussian Splat file? Missing properties: {attrError}");
-                splats = PLYDataToSplats(plyRawData, splatCount, vertexStride, attributes);
+                // donnees brutes liberees aussitot (24/11/2026 : elles restaient allouees, ≈ 300 Mo par sequence
+                // d'un million de gaussiennes)
+                try { splats = PLYDataToSplats(plyRawData, splatCount, vertexStride, attributes); }
+                finally { plyRawData.Dispose(); }
                 ReorderSHs(splatCount, (float*)splats.GetUnsafePtr());
                 LinearizeData(splats);
                 return;

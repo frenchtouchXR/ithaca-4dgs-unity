@@ -67,6 +67,8 @@ namespace GaussianSplatting4D.Runtime.Utils
         // null, Library/Ftgsz conserve.
         public static string runtimeCacheDir;
         public static bool DeleteAfterRead => runtimeCacheDir != null;
+        // decodage en memoire (DecodeToMemory) meme dans l'editeur, sans PLY dans Library/Ftgsz (essais)
+        public static bool inMemory;
 
         // Chemin du PLY decode (cree au premier appel, puis repris tant que le .ftgsz ne change pas)
         public static string ResolveToPly(string filePath)
@@ -126,47 +128,117 @@ namespace GaussianSplatting4D.Runtime.Utils
         {
             byte[] o = File.ReadAllBytes(filePath);
             var h = ReadHeader(o, out int pos);
-            int n = h.gaussiennes, bl = h.bloc;
             byte[] plyHeader = Encoding.ASCII.GetBytes(h.ply);
+            int nc = Champs(h.ply).Count;
+            var sortie = new float[(long)h.gaussiennes * nc];
+            unsafe { fixed (float* d = sortie) Decode(o, h, pos, d, 3); }
+            var ply = new byte[plyHeader.Length + sortie.Length * 4L];
+            Buffer.BlockCopy(plyHeader, 0, ply, 0, plyHeader.Length);
+            Buffer.BlockCopy(sortie, 0, ply, plyHeader.Length, sortie.Length * 4);
+            return ply;
+        }
+
+        // Decodage sans fichier intermediaire (24/11/2026) : en-tete PLY (octets) et sommets (memes octets que le PLY de
+        // DecodeToPly) dans un tableau natif a liberer par l'appelant. maxSHDegree < 3 : flux des coefficients de degre
+        // superieur ni decompresses ni decodes (laisses a 0).
+        public static unsafe void DecodeToMemory(string filePath, int maxSHDegree, out byte[] plyHeader, out Unity.Collections.NativeArray<byte> vertices)
+        {
+            byte[] o = File.ReadAllBytes(filePath);
+            var h = ReadHeader(o, out int pos);
+            plyHeader = Encoding.ASCII.GetBytes(h.ply);
+            int nc = Champs(h.ply).Count;
+            vertices = new Unity.Collections.NativeArray<byte>((int)((long)h.gaussiennes * nc * 4), Unity.Collections.Allocator.Persistent, Unity.Collections.NativeArrayOptions.ClearMemory);
+            try
+            {
+                Decode(o, h, pos, (float*)Unity.Collections.LowLevel.Unsafe.NativeArrayUnsafeUtility.GetUnsafePtr(vertices), maxSHDegree);
+            }
+            catch { vertices.Dispose(); throw; }
+        }
+
+        static List<string> Champs(string ply)
+        {
             var champs = new List<string>();
-            foreach (Match m in Regex.Matches(h.ply, @"property float (\S+)"))
+            foreach (Match m in Regex.Matches(ply, @"property float (\S+)"))
                 champs.Add(m.Groups[1].Value);
+            return champs;
+        }
+
+        // degre des harmoniques d'un champ f_rest_i (rangement canal par canal, parCanal coefficients par canal)
+        static int DegreSH(string champ, int parCanal)
+        {
+            if (!champ.StartsWith("f_rest_", StringComparison.Ordinal) || parCanal <= 0) return 0;
+            int k = int.Parse(champ.Substring(7), CultureInfo.InvariantCulture) % parCanal;
+            return k < 3 ? 1 : k < 8 ? 2 : 3;
+        }
+
+        // flux decodes dans sortie (n x nc floats, deja a zero)
+        static unsafe void Decode(byte[] o, Entete h, int pos, float* sortie, int maxSHDegree)
+        {
+            int n = h.gaussiennes, bl = h.bloc;
+            var champs = Champs(h.ply);
             int nc = champs.Count;
             var indice = new Dictionary<string, int>();
             for (int i = 0; i < nc; i++) indice[champs[i]] = i;
+            int parCanal = 0;
+            foreach (var c in champs) if (c.StartsWith("f_rest_", StringComparison.Ordinal)) parCanal++;
+            parCanal /= 3;
+            // flux inutiles : tous leurs champs sont des coefficients de degre > maxSHDegree (et leurs bornes)
+            var inutiles = new HashSet<string>();
+            if (maxSHDegree < 3)
+                foreach (var f in h.flux)
+                    if (f.champs != null && f.champs.Count > 0 && f.champs.TrueForAll(c => DegreSH(c, parCanal) > maxSHDegree))
+                    {
+                        inutiles.Add(f.nom);
+                        inutiles.Add(f.nom + "_bornes"); inutiles.Add(f.nom + "_palette"); inutiles.Add(f.nom + "_table");
+                    }
 
-            var donnees = new Dictionary<string, byte[]>();
+            // flux : non compresses lus en place dans le fichier, les autres decompresses une fois (24/11/2026 : sans
+            // copie ni tableaux intermediaires par composante, moins de memoire a ramasser pendant la lecture)
+            var donnees = new Dictionary<string, (byte[] a, int off)>();
             foreach (var f in h.flux)
             {
-                var brut = new byte[f.octets];
-                Buffer.BlockCopy(o, pos, brut, 0, f.octets);
+                if (!inutiles.Contains(f.nom))
+                    donnees[f.nom] = f.gzip ? (Degzip(o, pos, f.octets, f.brut), 0) : (o, pos);
                 pos += f.octets;
-                donnees[f.nom] = f.gzip ? Degzip(brut, f.brut) : brut;
             }
+            float[] Floats(string nom) { var d = donnees[nom]; return ToFloats(d.a, d.off, FluxOctets(h, nom)); }
 
-            var sortie = new float[(long)n * nc];
             foreach (var f in h.flux)
             {
+                if (inutiles.Contains(f.nom)) continue;
                 switch (f.codage)
                 {
                     case "bloc":
                     {
                         int k = f.champs.Count;
-                        var bornes = ToFloats(donnees[f.nom + "_bornes"]);
-                        var ent = Deballer(donnees[f.nom], n, f.bits, f.octets_mot);
-                        for (int j = 0; j < k; j++)
+                        var bornes = Floats(f.nom + "_bornes");
+                        var (d, off) = donnees[f.nom];
+                        int m = f.octets_mot;
+                        var c = new int[k]; var dec = new int[k]; var masque = new ulong[k]; var max = new double[k]; var mode = new int[k];
+                        for (int j = 0, sh = 0; j < k; j++)
                         {
-                            int c = indice[f.champs[j]];
-                            double max = (1L << f.bits[j]) - 1;
+                            c[j] = indice[f.champs[j]];
+                            dec[j] = sh; sh += f.bits[j];
+                            masque[j] = (1UL << f.bits[j]) - 1;
+                            max[j] = (1L << f.bits[j]) - 1;
                             string tr = f.transfo != null && j < f.transfo.Count ? f.transfo[j] : "";
-                            for (int i = 0; i < n; i++)
+                            mode[j] = tr == "couleur" ? 1 : tr == "sigmoide" ? 2 : 0;
+                        }
+                        for (int b0 = 0; b0 < n; b0 += bl)
+                        {
+                            int b = b0 / bl * 2 * k, fin = Math.Min(n, b0 + bl);
+                            for (int i = b0; i < fin; i++)
                             {
-                                int b = i / bl * 2 * k;
-                                double mn = bornes[b + j], mx = bornes[b + k + j];
-                                double v = mn + ent[j][i] / max * (mx - mn);
-                                if (tr == "couleur") v = (v - 0.5) / C0;
-                                else if (tr == "sigmoide") { v = Math.Min(Math.Max(v, 1e-7), 1 - 1e-7); v = Math.Log(v / (1 - v)); }
-                                sortie[(long)i * nc + c] = (float)v;
+                                ulong mot = Mot(d, off, n, m, i);
+                                for (int j = 0; j < k; j++)
+                                {
+                                    // bornes du bloc ; memes calculs en double qu'avant
+                                    double mn = bornes[b + j], mx = bornes[b + k + j];
+                                    double v = mn + (long)((mot >> dec[j]) & masque[j]) / max[j] * (mx - mn);
+                                    if (mode[j] == 1) v = (v - 0.5) / C0;
+                                    else if (mode[j] == 2) { v = Math.Min(Math.Max(v, 1e-7), 1 - 1e-7); v = Math.Log(v / (1 - v)); }
+                                    sortie[(long)i * nc + c[j]] = (float)v;
+                                }
                             }
                         }
                         break;
@@ -174,19 +246,21 @@ namespace GaussianSplatting4D.Runtime.Utils
                     case "quat":
                     {
                         int bq = f.bits[0];
-                        double m = (1L << bq) - 1, s2 = Math.Sqrt(0.5);
-                        var ent = Deballer(donnees[f.nom], n, new List<int> { bq, bq, bq, 2 }, f.octets_mot);
+                        double mq = (1L << bq) - 1, s2 = Math.Sqrt(0.5);
+                        var (d, off) = donnees[f.nom];
+                        ulong mk = (1UL << bq) - 1;
                         var c = new int[4];
                         for (int j = 0; j < 4; j++) c[j] = indice[f.champs[j]];
                         var q = new double[4];
                         for (int i = 0; i < n; i++)
                         {
-                            int im = (int)ent[3][i], a = 0;
+                            ulong mot = Mot(d, off, n, f.octets_mot, i);
+                            int im = (int)((mot >> (3 * bq)) & 3UL), a = 0;
                             double s = 0;
                             for (int j = 0; j < 4; j++)
                             {
                                 if (j == im) continue;
-                                q[j] = ent[a][i] / m * 2 * s2 - s2;
+                                q[j] = (long)((mot >> (a * bq)) & mk) / mq * 2 * s2 - s2;
                                 s += q[j] * q[j];
                                 a++;
                             }
@@ -199,29 +273,31 @@ namespace GaussianSplatting4D.Runtime.Utils
                     case "table":
                     {
                         int k = f.champs.Count;
-                        float[] t = f.codage == "palette" ? FromHalfs(donnees[f.nom + "_palette"]) : ToFloats(donnees[f.nom + "_table"]);
-                        long[] idx = f.bits[0] > 0 ? Deballer(donnees[f.nom], n, f.bits, f.octets_mot)[0] : new long[n];
+                        float[] t;
+                        if (f.codage == "palette") { var pd = donnees[f.nom + "_palette"]; t = FromHalfs(pd.a, pd.off, FluxOctets(h, f.nom + "_palette")); }
+                        else t = Floats(f.nom + "_table");
                         var c = new int[k];
                         for (int j = 0; j < k; j++) c[j] = indice[f.champs[j]];
+                        bool avecIdx = f.bits[0] > 0;
+                        var (d, off) = avecIdx ? donnees[f.nom] : (null, 0);
+                        ulong mk = avecIdx ? (1UL << f.bits[0]) - 1 : 0;
                         for (int i = 0; i < n; i++)
+                        {
+                            long idx = avecIdx ? (long)(Mot(d, off, n, f.octets_mot, i) & mk) : 0;
                             for (int j = 0; j < k; j++)
-                                sortie[(long)i * nc + c[j]] = t[idx[i] * k + j];
+                                sortie[(long)i * nc + c[j]] = t[idx * k + j];
+                        }
                         break;
                     }
                     // "zero" : deja a 0 ; "donnees" : bornes, palettes, tables (lues ci-dessus)
                 }
             }
-
-            var ply = new byte[plyHeader.Length + sortie.Length * 4L];
-            Buffer.BlockCopy(plyHeader, 0, ply, 0, plyHeader.Length);
-            Buffer.BlockCopy(sortie, 0, ply, plyHeader.Length, sortie.Length * 4);
-            return ply;
         }
 
-        static byte[] Degzip(byte[] z, int taille)
+        static byte[] Degzip(byte[] o, int debut, int octets, int taille)
         {
             var r = new byte[taille];
-            using var gz = new GZipStream(new MemoryStream(z), CompressionMode.Decompress);
+            using var gz = new GZipStream(new MemoryStream(o, debut, octets, false), CompressionMode.Decompress);
             int lu = 0;
             while (lu < taille)
             {
@@ -232,36 +308,32 @@ namespace GaussianSplatting4D.Runtime.Utils
             return r;
         }
 
-        // Entiers de chaque composante : mot de m octets (octets stockes plan par plan), composantes des bits faibles aux forts
-        static long[][] Deballer(byte[] octets, int n, List<int> bits, int m)
+        // octets (decompresses) d'un flux
+        static int FluxOctets(Entete h, string nom)
         {
-            var r = new long[bits.Count][];
-            for (int j = 0; j < bits.Count; j++) r[j] = new long[n];
-            for (int i = 0; i < n; i++)
-            {
-                ulong mot = 0;
-                for (int k = 0; k < m; k++) mot |= (ulong)octets[(long)k * n + i] << (8 * k);
-                int dec = 0;
-                for (int j = 0; j < bits.Count; j++)
-                {
-                    r[j][i] = (long)((mot >> dec) & ((1UL << bits[j]) - 1));
-                    dec += bits[j];
-                }
-            }
-            return r;
+            foreach (var f in h.flux) if (f.nom == nom) return f.gzip ? f.brut : f.octets;
+            throw new IOException($"Flux {nom} absent du .ftgsz.");
         }
 
-        static float[] ToFloats(byte[] b)
+        // mot de m octets de la gaussienne i (octets stockes plan par plan), composantes des bits faibles aux forts
+        static ulong Mot(byte[] d, int off, int n, int m, int i)
         {
-            var f = new float[b.Length / 4];
-            Buffer.BlockCopy(b, 0, f, 0, f.Length * 4);
+            ulong mot = 0;
+            for (int k = 0; k < m; k++) mot |= (ulong)d[off + (long)k * n + i] << (8 * k);
+            return mot;
+        }
+
+        static float[] ToFloats(byte[] b, int off, int octets)
+        {
+            var f = new float[octets / 4];
+            Buffer.BlockCopy(b, off, f, 0, f.Length * 4);
             return f;
         }
 
-        static float[] FromHalfs(byte[] b)
+        static float[] FromHalfs(byte[] b, int off, int octets)
         {
-            var f = new float[b.Length / 2];
-            for (int i = 0; i < f.Length; i++) f[i] = Mathf.HalfToFloat(BitConverter.ToUInt16(b, 2 * i));
+            var f = new float[octets / 2];
+            for (int i = 0; i < f.Length; i++) f[i] = Mathf.HalfToFloat(BitConverter.ToUInt16(b, off + 2 * i));
             return f;
         }
     }

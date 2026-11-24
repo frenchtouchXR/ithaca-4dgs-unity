@@ -69,6 +69,10 @@ namespace GaussianSplatting4D.Runtime
                 numFrames = asset.temporalFrames;
         }
 
+        // buffer temporel deja sur le GPU (modele envoye par morceaux, GaussianSplatGpuData) : adopte tel quel
+        GaussianSplatGpuData GpuData => m_Renderer != null && m_Renderer.m_Asset != null ? m_Renderer.m_Asset.gpuData : null;
+        bool HasTemporalSource => temporalDataAsset != null || GpuData?.temporal != null;
+
         int TemporalStride => m_Renderer != null && m_Renderer.m_Asset != null ? m_Renderer.m_Asset.temporalStride : GaussianSplatAsset.kTemporalStride4C4D;
 
         void OnEnable()
@@ -78,7 +82,7 @@ namespace GaussianSplatting4D.Runtime
             // m_GpuTemporalData peut avoir ete dispose par Gaussian4DSplatRenderer.OnDisable()
             // (meme reference partagee via m_Renderer.m_GpuTemporalDummy) sans que notre propre
             // champ soit remis a null -- OnDisable() ci-dessous s'en charge desormais.
-            if (m_GpuTemporalData == null && temporalDataAsset != null)
+            if (m_GpuTemporalData == null && HasTemporalSource)
                 UploadTemporalData();
 #if UNITY_EDITOR
             // Etat de repos en editeur (lancement Unity / ouverture de scene) : toujours
@@ -128,7 +132,7 @@ namespace GaussianSplatting4D.Runtime
         {
             if (m_Renderer == null) m_Renderer = GetComponent<Gaussian4DSplatRenderer>();
             if (m_Renderer == null) return;
-            if (m_GpuTemporalData == null && temporalDataAsset != null)
+            if (m_GpuTemporalData == null && HasTemporalSource)
                 UploadTemporalData();
             if (m_GpuTemporalData != null)
             {
@@ -256,6 +260,17 @@ namespace GaussianSplatting4D.Runtime
 
         void UploadTemporalData()
         {
+            var gpu = GpuData;
+            if (gpu?.temporal != null)
+            {
+                // deja sur le GPU, plage de lecture calculee en arriere-plan (GaussianSplatRuntimeLoader)
+                ReleaseGpuBuffer();
+                m_GpuTemporalData = gpu.temporal;
+                m_PlayStart = 0f; m_PlayEnd = -1f;
+                if (gpu.playEnd > gpu.playStart) { m_PlayStart = gpu.playStart; m_PlayEnd = gpu.playEnd; }
+                m_Renderer.m_GpuTemporalDummy = m_GpuTemporalData;
+                return;
+            }
             if (temporalDataAsset == null) { Debug.LogWarning("[Gaussian4DPlayer] No temporal data asset."); return; }
             ReleaseGpuBuffer();
             byte[] bytes = temporalDataAsset.bytes;
@@ -283,7 +298,7 @@ namespace GaussianSplatting4D.Runtime
             m_Renderer.m_GpuTemporalDummy = m_GpuTemporalData;
         }
 
-        void ReleaseGpuBuffer() { m_GpuTemporalData?.Release(); m_GpuTemporalData = null; }
+        void ReleaseGpuBuffer() { if (!GaussianSplatGpuData.Owns(m_GpuTemporalData)) m_GpuTemporalData?.Release(); m_GpuTemporalData = null; }
     }
 
 #if UNITY_EDITOR

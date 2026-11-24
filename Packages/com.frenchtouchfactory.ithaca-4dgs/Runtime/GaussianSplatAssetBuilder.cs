@@ -483,7 +483,7 @@ namespace GaussianSplatting4D.Runtime
             data.Dispose();
         }
 
-        static int SplatIndexToTextureIndex(uint idx)
+        internal static int SplatIndexToTextureIndex(uint idx)
         {
             uint2 xy = GaussianUtils.DecodeMorton2D_16x16(idx);
             uint width = GaussianSplatAsset.kTextureWidth / 16;
