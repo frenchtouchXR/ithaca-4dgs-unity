@@ -97,6 +97,7 @@ namespace GaussianSplatting4D.Runtime
             public float decalage_son;   // secondes de son avant la premiere image du rendu
             public SequenceInfo[] sequences;
             public Cadrage cadrage;
+            public Gaussian4DColorFilters.Colorimetrie colorimetrie;   // colorimetrie et filtre HSV regles sur le site
             public Fichier fichier;      // rendu en un seul fichier .4dgs (sans liste de sequences : ouvert par son index)
             [NonSerialized] public Trajectoire trajectoire;
             [NonSerialized] public List<SonPlage> sonsPlage;   // .4dgs : pistes son, plages d'octets du fichier
@@ -256,6 +257,7 @@ namespace GaussianSplatting4D.Runtime
                 titre = string.IsNullOrEmpty(idx.titre) ? titre : idx.titre,
                 total = idx.images, fps = idx.fps > 0 ? idx.fps : 30, decalage_son = idx.decalage_son,
                 cadrage = idx.cadrage,
+                colorimetrie = idx.colorimetrie,
                 trajectoire = Trajectoire.Lire(json),
                 sequences = Array.ConvertAll(idx.sequences, b => new SequenceInfo { url = url, format = b.encodage == "trgz1" ? "trgz" : "ftgsz", premiere = b.premiere, images = b.images, offset = b.offset, octets = b.octets,
                                                                                   trainPremiere = b.entrainement_images > 0 ? b.entrainement_premiere : b.premiere, trainImages = b.entrainement_images }),
@@ -487,6 +489,11 @@ namespace GaussianSplatting4D.Runtime
                 m_Boite.transform.localPosition = V3(boite.centre, Vector3.zero);
                 m_Boite.transform.localScale = Abs(V3(boite.demi, Vector3.one));     // cube unite [-1, 1] -> demi-cotes
             }
+            // colorimetrie et filtre HSV du rendu (28/11/2026) : repris dans le Gaussian4DColorFilters de ce lecteur
+            // (ajoute au besoin) ; cube du filtre dans le repere de la scene, comme la boite du cadrage
+            var filtres = GetComponent<Gaussian4DColorFilters>();
+            if (!filtres && Gaussian4DColorFilters.Actif(rendu.colorimetrie)) filtres = gameObject.AddComponent<Gaussian4DColorFilters>();
+            if (filtres && filtres.m_UseRenderSettings) filtres.Appliquer(rendu.colorimetrie, m_Scene);
             m_Cadree = false;
             m_Ordre = template.m_RenderOrder;
             m_Opacite = template.m_OpacityScale;

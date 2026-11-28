@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Color correction and HSV filter (2026-11-28, same computation as the ITHACA web viewer)
+- New separate script `Gaussian4DColorFilters`: color correction (exposure, brightness, contrast, saturation,
+  temperature, tint, gamma) and HSV filter (removes the splats whose base color, after the color correction, is
+  within a hue / saturation / value range; optional cube, inside or outside). Applies to every
+  `Gaussian4DSplatRenderer` below it (`m_ColorFilters` on the renderer to pick one explicitly).
+- `Gaussian4DSequencePlayer` reads the `colorimetrie` of the render (`.4dgs` index or share JSON) and applies it
+  (`Use Render Settings`, on by default); the filter cube is placed in the scene frame, like the cadrage box.
+
 ### Playback robustness (2026-11-28, port of the ITHACA web viewer 20261127h)
 No change needed in existing code; new statistics in `Gaussian4DSequencePlayer.stats`.
 - The character is never erased: when the sequence to play is not ready, the last picture drawn stays on screen

@@ -165,6 +165,18 @@ Android: they are used when present. `Open(json)` ignores a UTF-8 byte order mar
 On a Quest 3, the Thriller Cat (14 sequences of about 200,000 splats, 2 s each) plays with its sound in sync,
 each sequence being prepared in 0.5 s.
 
+### Color correction and HSV filter
+
+`Gaussian4DColorFilters` is a separate script with two filters, computed exactly as in the ITHACA platform's web
+viewer. **Color correction** (exposure, brightness, contrast, saturation, temperature, tint, gamma) changes the
+color of every splat; the background is left untouched. The **HSV filter** removes the splats whose base color
+falls within a hue, saturation and value range. A hue range with low > high wraps around red. The default range
+removes black. A cube (any `Transform`, unit cube [-1, 1]) can limit the filter to its inside or its outside.
+Put the script on a parent of the `Gaussian4DSplatRenderer` objects (or on the `Gaussian4DSequencePlayer`): it
+applies to every model below it, and changes show up on the next frame. When an ITHACA render (`.4dgs` file or
+share JSON) has a color correction saved by its owner, `Gaussian4DSequencePlayer` applies it automatically and
+adds the script if needed. Uncheck `Use Render Settings` to keep your own settings instead.
+
 ## License
 
 MIT. See [LICENSE.md](LICENSE.md). This package includes and extends code originally authored

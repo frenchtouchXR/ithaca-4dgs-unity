@@ -116,6 +116,52 @@ uint _SHOnly;
 
 uint _SplatCutoutsCount;
 
+// Filtres de couleur (28/11/2026, Gaussian4DColorFilters.cs ; memes calculs que la visionneuse du site, couleurs.js)
+// colorimetrie : gain RVB, puis contraste, luminosite, saturation, 1/gamma
+uint _CCOn;
+float3 _CCGain;
+float4 _CCParam;
+// filtre HSV : intervalles H, S, V retires (0…1 ; teinte qui passe par le rouge si x > y) ; cube 1 interieur / 2 exterieur
+uint _CKOn;
+uint _CKBox;
+float2 _CKH, _CKS, _CKV;
+float4x4 _CKMat;    // repere objet -> cube unite [-1, 1]
+
+float3 Colorimetrie(float3 c)
+{
+    c = (c * _CCGain - 0.5) * _CCParam.x + 0.5 + _CCParam.y;
+    c = lerp(dot(c, float3(0.2126, 0.7152, 0.0722)).xxx, c, _CCParam.z);
+    return pow(max(c, 0.0), _CCParam.www);
+}
+
+float3 RgbVersHsv(float3 c)     // teinte, saturation, valeur dans 0…1 (comme rgb2hsv du site)
+{
+    float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b)), d = mx - mn, h = 0.0;
+    if (d > 1e-6)
+    {
+        if (mx == c.r) { h = (c.g - c.b) / d; h -= 6.0 * floor(h / 6.0); }
+        else if (mx == c.g) h = (c.b - c.r) / d + 2.0;
+        else h = (c.r - c.g) / d + 4.0;
+    }
+    return float3(frac(h / 6.0), mx > 1e-6 ? d / mx : 0.0, mx);
+}
+
+// vrai si le filtre HSV retire la gaussienne : couleur de BASE (degre 0) apres la colorimetrie, centre pos (objet)
+bool FiltreHsv(float3 base, float3 pos)
+{
+    float3 k = max(base, 0.0);
+    if (_CCOn != 0) k = Colorimetrie(k);
+    float3 hsv = RgbVersHsv(saturate(k));
+    bool dansH = _CKH.x <= _CKH.y ? (hsv.x >= _CKH.x && hsv.x <= _CKH.y) : (hsv.x >= _CKH.x || hsv.x <= _CKH.y);
+    if (!(dansH && hsv.y >= _CKS.x && hsv.y <= _CKS.y && hsv.z >= _CKV.x && hsv.z <= _CKV.y))
+        return false;
+    if (_CKBox == 0)
+        return true;
+    float3 q = mul(_CKMat, float4(pos, 1)).xyz;
+    bool dedans = all(abs(q) <= 1);
+    return _CKBox == 1 ? dedans : !dedans;
+}
+
 #define SPLAT_CUTOUT_TYPE_ELLIPSOID 0
 #define SPLAT_CUTOUT_TYPE_BOX 1
 
@@ -443,6 +489,12 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
         centerClipPos.w = 0;
     }
 
+    // filtre HSV (Gaussian4DColorFilters)
+    if (_CKOn != 0 && FiltreHsv((float3)splat.sh.col, splat.pos))
+    {
+        centerClipPos.w = 0;
+    }
+
     float junctionW = 1.0;
     if (_JunctionSplit > 0)
     {
@@ -473,6 +525,8 @@ void CSCalcViewData (uint3 id : SV_DispatchThreadID)
 
         half4 col;
         col.rgb = ShadeSH(splat.sh, objViewDir, _SHOrder, _SHOnly != 0);
+        if (_CCOn != 0)
+            col.rgb = (half3)Colorimetrie((float3)col.rgb);
         if (_JunctionSplit > 0)
             col.a = min((half)(1.0 - pow(saturate(1.0 - (float)splat.opacity), junctionW)) * opacityScale, 65000);
         else

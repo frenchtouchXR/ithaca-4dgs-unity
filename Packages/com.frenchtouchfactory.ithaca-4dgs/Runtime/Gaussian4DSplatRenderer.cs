@@ -372,6 +372,22 @@ namespace GaussianSplatting4D.Runtime
         [Range(1.0f,15.0f)] public float m_PointDisplaySize = 3.0f;
 
         public GaussianCutout[] m_Cutouts;
+        [Tooltip("Filtres de couleur (colorimetrie, filtre HSV) ; vide = le Gaussian4DColorFilters d'un parent, s'il y en a un")]
+        public Gaussian4DColorFilters m_ColorFilters;
+        Gaussian4DColorFilters m_FiltresParent;
+        int m_FiltresImage = -1;
+
+        // filtres de couleur appliques a ce modele : ceux donnes, sinon ceux d'un parent (cherches une fois par image)
+        Gaussian4DColorFilters FiltresCouleur()
+        {
+            if (m_ColorFilters) return m_ColorFilters;
+            if (m_FiltresImage != Time.frameCount)
+            {
+                m_FiltresImage = Time.frameCount;
+                m_FiltresParent = GetComponentInParent<Gaussian4DColorFilters>();
+            }
+            return m_FiltresParent;
+        }
 
         public Shader m_ShaderSplats;
         public Shader m_ShaderComposite;
@@ -865,6 +881,7 @@ namespace GaussianSplatting4D.Runtime
             cmb.SetComputeVectorParam(m_CSSplatUtilities, Props.JunctionWeights, junctionWeights);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOrder, m_SHOrder);
             cmb.SetComputeIntParam(m_CSSplatUtilities, Props.SHOnly, m_SHOnly ? 1 : 0);
+            Gaussian4DColorFilters.Pousser(FiltresCouleur(), cmb, m_CSSplatUtilities, matO2W);
 
             // re-pousser SplatCount + Is4D + temps JUSTE avant le dispatch (etat global du CS partage,
             // peut avoir ete change par le sort/un autre objet entre SetAssetDataOnCS et ici)

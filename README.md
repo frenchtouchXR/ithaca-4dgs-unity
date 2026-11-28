@@ -135,6 +135,18 @@ actors in the same scene.
 **Note:** leave `SH Only` unchecked on `Gaussian4DSplatRenderer` — it's a debug visualization
 mode that isolates the spherical-harmonics contribution and forces a grayscale render.
 
+### Color correction and HSV filter
+
+`Gaussian4DColorFilters` is a separate script with two filters, computed exactly as in the ITHACA platform's web
+viewer. **Color correction** (exposure, brightness, contrast, saturation, temperature, tint, gamma) changes the
+color of every splat; the background is left untouched. The **HSV filter** removes the splats whose base color
+falls within a hue, saturation and value range. A hue range with low > high wraps around red. The default range
+removes black. A cube (any `Transform`, unit cube [-1, 1]) can limit the filter to its inside or its outside.
+Put the script on a parent of the `Gaussian4DSplatRenderer` objects (or on the `Gaussian4DSequencePlayer`): it
+applies to every model below it, and changes show up on the next frame. When an ITHACA render (`.4dgs` file or
+share JSON) has a color correction saved by its owner, `Gaussian4DSequencePlayer` applies it automatically and
+adds the script if needed. Uncheck `Use Render Settings` to keep your own settings instead.
+
 ## What's different from the original project
 
 | Area | Change |

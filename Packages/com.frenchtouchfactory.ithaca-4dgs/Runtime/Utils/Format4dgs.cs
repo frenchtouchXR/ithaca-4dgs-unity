@@ -41,6 +41,7 @@ namespace GaussianSplatting4D.Runtime.Utils
             public int images;
             public float decalage_son;
             public Gaussian4DSequencePlayer.Cadrage cadrage;
+            public Gaussian4DColorFilters.Colorimetrie colorimetrie;   // facultative (colorimetrie et filtre HSV du site)
             public Bloc[] sequences;
             public Bloc[] sons;
             public Bloc vignette;
