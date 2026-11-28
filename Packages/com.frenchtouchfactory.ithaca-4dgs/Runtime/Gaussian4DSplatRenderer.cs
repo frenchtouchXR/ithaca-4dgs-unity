@@ -361,6 +361,10 @@ namespace GaussianSplatting4D.Runtime
         public bool m_SHOnly;
         [Range(1,30)] [Tooltip("Sort splats only every N frames")]
         public int m_SortNthFrame = 1;
+        [Tooltip("4D : tri evite quand l'instant dessine n'a pas change et que la camera a peu bouge (moins de 1 % du rayon du modele vu) : pause, image tenue, mise en memoire. En lecture l'instant change a chaque image : tri a chaque image comme avant")]
+        public bool m_SkipStillSorts = true;
+        // tris evites (tous les objets, depuis le lancement ; diagnostic)
+        public static int sortsSkipped;
         [Tooltip("Melange des splats en sRGB, comme a l'entrainement et dans le lecteur navigateur (contours et zones translucides fideles). Decoche : melange lineaire d'origine (aras-p), qui eclaircit les zones translucides.")]
         public bool m_SRGBBlending = true;
 
@@ -381,6 +385,12 @@ namespace GaussianSplatting4D.Runtime
         internal GraphicsBuffer m_GpuSortKeys;
         GraphicsBuffer m_GpuPosDisplaced;
         int m_PosDisplacedReady;
+        float m_PosDisplacedTime;            // instant des positions deplacees (dernier calcul de vue)
+        // dernier tri (28/11/2026, tri evite) : camera, matrice objet -> vue, instant des positions triees
+        bool m_TriValide;
+        int m_TriCamera;
+        Matrix4x4 m_TriMV;
+        float m_TriTemps;
         GraphicsBuffer m_GpuPosData;
         GraphicsBuffer m_GpuOtherData;
         GraphicsBuffer m_GpuSHData;
@@ -590,6 +600,7 @@ namespace GaussianSplatting4D.Runtime
             m_GpuSortKeys?.Dispose();
             m_GpuPosDisplaced?.Dispose();
             m_PosDisplacedReady = 0;
+            m_TriValide = false;
             m_SorterArgs.resources.Dispose();
 
             EnsureSorterAndRegister();
@@ -786,6 +797,7 @@ namespace GaussianSplatting4D.Runtime
             m_SplatCount = 0;
             m_GpuChunksValid = false;
             m_PosDisplacedReady = 0;
+            m_TriValide = false;
 
             editSelectedSplats = 0;
             editDeletedSplats = 0;
@@ -867,6 +879,25 @@ namespace GaussianSplatting4D.Runtime
             m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.CalcViewData, out uint gsX, out _, out _);
             cmb.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcViewData, (m_GpuView.count + (int)gsX - 1)/(int)gsX, 1, 1);
             m_PosDisplacedReady = 1;
+            m_PosDisplacedTime = m_TemporalCurrentTime;
+        }
+
+        // Tri evite (28/11/2026, comme la visionneuse du site) : la vue n'a "pas bouge" si, pour tout point de la sphere
+        // englobante du modele (centre c, rayon r, repere objet), la profondeur et la place a l'ecran (lignes x, y, z de
+        // la matrice objet -> vue) changent de moins de 1 % du rayon du modele vu : seules des gaussiennes a moins de 1 %
+        // du rayon l'une derriere l'autre pourraient echanger leur place, ecart invisible au melange.
+        bool VuePareille(Matrix4x4 A, Matrix4x4 B)
+        {
+            if (m_Asset == null) return false;
+            Vector3 c = (m_Asset.boundsMin + m_Asset.boundsMax) * 0.5f;
+            float r = Mathf.Max(1e-6f, (m_Asset.boundsMax - m_Asset.boundsMin).magnitude * 0.5f);
+            float vu = new Vector3(B.m20, B.m21, B.m22).magnitude * r;
+            for (int l = 0; l < 3; l++)
+            {
+                float da = B[l, 0] - A[l, 0], db = B[l, 1] - A[l, 1], dc = B[l, 2] - A[l, 2], dd = B[l, 3] - A[l, 3];
+                if (Mathf.Abs(da * c.x + db * c.y + dc * c.z + dd) + Mathf.Sqrt(da * da + db * db + dc * dc) * r > 0.01f * vu) return false;
+            }
+            return true;
         }
 
         internal void SortPoints(CommandBuffer cmd, Camera cam, Matrix4x4 matrix)
@@ -878,6 +909,21 @@ namespace GaussianSplatting4D.Runtime
             worldToCamMatrix.m20 *= -1;
             worldToCamMatrix.m21 *= -1;
             worldToCamMatrix.m22 *= -1;
+
+            // tri evite (4D) : memes positions (instant du dernier calcul de vue = celui du dernier tri), meme camera, vue
+            // pareille ; l'ordre du dernier tri reste dans m_GpuSortKeys
+            Matrix4x4 mv = worldToCamMatrix * matrix;
+            int camId = cam.GetInstanceID();
+            if (m_SkipStillSorts && m_TriValide && m_Is4D > 0.5f && m_PosDisplacedReady == 1 && camId == m_TriCamera
+                && m_PosDisplacedTime == m_TriTemps && VuePareille(m_TriMV, mv))
+            {
+                ++sortsSkipped;
+                return;
+            }
+            m_TriValide = m_PosDisplacedReady == 1;
+            m_TriCamera = camId;
+            m_TriMV = mv;
+            m_TriTemps = m_PosDisplacedTime;
 
             // calculate distance to the camera for each splat
             cmd.BeginSample(s_ProfSort);

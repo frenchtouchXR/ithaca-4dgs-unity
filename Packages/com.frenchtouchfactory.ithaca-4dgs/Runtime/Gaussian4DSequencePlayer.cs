@@ -28,9 +28,25 @@ namespace GaussianSplatting4D.Runtime
     //   - fondu enchaine (rendus avec transition) : modele de jonction des deux sequences trie d'un bloc
     //     (GaussianSplatJunction, prepare en arriere-plan), poids continus sur tout le recouvrement a densite constante
     //     (α' = 1 − (1 − α)^w) ; jonction gardee jusqu'au bout de son recouvrement ;
-    //   - horloge du son : le temps ne recule jamais ; rattrapage doux (±25 %) jusqu'a 1 s d'ecart ; saut seulement au
-    //     depart, a la boucle, a la pause / au deplacement ou au-dela de 1 s ; une image a plus de 1 s d'avance attend
-    //     le son.
+    //   - horloge a vitesse strictement constante (25/11/2026), ancree sur le son ; le temps ne recule jamais.
+    //
+    // Portage de la visionneuse du site 20261127h (28/11/2026) :
+    //   - personnage jamais efface : quand la sequence suivante n'est pas prete, la derniere image dessinee reste a
+    //     l'ecran (meme instant, memes poids), le temps et le son attendent (aussi au bouclage) ; reprise des que la
+    //     suivante est prete (stats.heldFrames) ;
+    //   - pas de saut du temps apres un gel (entree / sortie du mode immersif ou de l'AR, application en arriere-plan) :
+    //     plus de ~0,75 s sans image, le son est coupe et repart de l'image affichee (stats.clockResumes) ;
+    //   - budget memoire tenu a tout instant : capacite recalculee a chaque sequence sur son poids reel (GPU : donnees
+    //     et tampons du rendu ; processeur : donnees preparees gardees pendant l'envoi), place d'une sequence en vol
+    //     laissee ; un decodage ne part que si sa place tient dans le budget ; mobile (Quest), sequences lourdes
+    //     (> 150 Mo) : 2 decodages et 1 envoi en attente au plus (stats.memoryMB) ;
+    //   - fin de boucle : les premieres sequences restent en memoire pendant toute la lecture (2 a partir de 6 places, 1
+    //     a partir de 4 ; stats.keptAtStart) ;
+    //   - depart selon le debit reel de preparation : sequences pretes par seconde comparees au debit de lecture ;
+    //     preparation moins de 1,25 fois plus rapide → depart fenetre pleine ; vitesse de lecture jamais changee
+    //     (stats.prepRate, stats.playRate). Avant le depart, la premiere image est deja dessinee (state Waiting).
+    //   - tri : sur le GPU a chaque image (Gaussian4DSplatRenderer) ; evite quand l'instant n'a pas change et que la
+    //     camera a peu bouge (m_SkipStillSorts : pause, image tenue).
     public class Gaussian4DSequencePlayer : MonoBehaviour
     {
         [Serializable]
@@ -119,6 +135,15 @@ namespace GaussianSplatting4D.Runtime
             public float activateMs;         // derniere activation d'un modele envoye (adoption, tampons de tri)
             public float releaseMs;          // derniere liberation d'un modele
             public double clockRealtime;     // instant reel (Time.realtimeSinceStartupAsDouble) de currentFrame
+            // 28/11/2026 (portage de la visionneuse du site 20261127h)
+            public int heldFrames;           // images tenues : derniere image gardee a l'ecran, sequence suivante pas prete
+            public int clockResumes;         // gels (> 0,75 s sans image) : son coupe, reprise a l'image affichee
+            public float memoryMB;           // memoire estimee (GPU + processeur) de tout ce que le lecteur tient
+            public float budgetMB;           // budget memoire de l'appareil
+            public int keptAtStart;          // premieres sequences gardees en memoire (fin de boucle sans rechargement)
+            public float prepRate;           // depart : sequences pretes par seconde
+            public float playRate;           // depart : sequences lues par seconde
+            public int sortsSkipped;         // tris evites (camera immobile, instant inchange) depuis l'ouverture
         }
 
         [Tooltip("Objet de la scene avec Gaussian4DSplatRenderer et Gaussian4DPlayer deja regles (shaders, melange) ; desactive, sert de modele aux sequences chargees")]
@@ -324,7 +349,9 @@ namespace GaussianSplatting4D.Runtime
             public GaussianSplatAsset asset;
             public Pion pion;                    // objet de rendu (actif une fois envoye au GPU)
             public int split;                    // jonction : premiere gaussienne du cote a + 1
-            public long octets;
+            public long octets;                  // donnees du modele (GPU ; meme poids en memoire tant que prep est garde)
+            public int count;                    // gaussiennes
+            public long fichier;                 // fichier compresse (octets)
         }
 
         class Pion
@@ -342,13 +369,17 @@ namespace GaussianSplatting4D.Runtime
         readonly List<Pion> m_TousPions = new();
         int m_Gen;
         int m_Capacite;
-        long m_OctetsSequence;
         float m_BudgetMB;
         int m_NbDecodeurs;
         double m_MsParMo = 2.0;
         float m_DureeImage = 1f / 60f;
-        bool m_Pret;                 // premiere image dessinee
-        bool m_Attente;
+        bool m_Demarre;              // lecture partie (regle de depart remplie)
+        bool m_Attente;              // sequence voulue pas prete : derniere image tenue, temps et son arretes
+        bool m_SonABoucler;          // bouclage : son relance a la premiere image dessinable
+        double m_PremierDebut;       // debut de la premiere preparation (debit de preparation)
+        int m_TriesAvant;            // Gaussian4DSplatRenderer.sortsSkipped a l'ouverture
+        // ce qui a ete dessine a la derniere image (cles des entrees) : tenu a l'ecran pendant une attente
+        readonly List<int> m_Affiches = new();
         int m_Ordre;
         float m_Opacite;
 
@@ -391,7 +422,9 @@ namespace GaussianSplatting4D.Runtime
             if (!keepDownloads)
                 foreach (var f in m_Downloaded) TryDelete(f);
             m_Downloaded.Clear();
-            m_Capacite = 0; m_OctetsSequence = 0; m_Pret = false; m_Attente = false; m_Paused = false;
+            m_Capacite = 0; m_Demarre = false; m_Attente = false; m_SonABoucler = false; m_Paused = false;
+            m_Affiches.Clear(); m_PremierDebut = 0;
+            m_GpuSeq = m_DonneesSeq = m_FichierSeq = m_GpuJonction = 0;
             state = State.Idle;
             status = "";
         }
@@ -474,11 +507,13 @@ namespace GaussianSplatting4D.Runtime
                 : Mathf.Clamp(Mathf.Min(SystemInfo.graphicsMemorySize * 0.5f, SystemInfo.systemMemorySize * 0.25f), 1000, 8000);
             m_NbDecodeurs = decoders > 0 ? decoders : Mobile ? 2 : Mathf.Clamp(SystemInfo.processorCount / 4, 2, 4);
             stats.decoders = m_NbDecodeurs;
+            stats.budgetMB = m_BudgetMB;
+            m_TriesAvant = Gaussian4DSplatRenderer.sortsSkipped;
 
             // son : toutes les pistes entierement chargees avant la lecture (un decodage au fil de l'eau decale le son) ;
             // la premiere sequence est preparee pendant ce temps
             m_Time = 0;
-            Alimenter(0, 0);
+            Alimenter(0, 0, false);
             var pistes = rendu.sons_ogg != null && rendu.sons_ogg.Length > 0 ? rendu.sons_ogg : rendu.sons;
             if (rendu.sonsPlage != null && rendu.sonsPlage.Count > 0)
             {
@@ -518,54 +553,85 @@ namespace GaussianSplatting4D.Runtime
             while (true)
             {
                 if (state == State.Error) yield break;
-                double maintenant = chrono.Elapsed.TotalSeconds;
-                float dt = (float)Math.Min(maintenant - avant, 0.1);
+                double maintenant = chrono.Elapsed.TotalSeconds, ecart = maintenant - avant;
+                float dt = (float)Math.Min(ecart, 0.1);
                 avant = maintenant;
                 if (dt > 0) m_DureeImage = 0.9f * m_DureeImage + 0.1f * dt;
-                Image(dt);
+                Image(dt, ecart);
                 yield return null;
             }
         }
 
         // ---- une image : horloge, fenetre de sequences, envois au GPU, ce qui est dessine
-        void Image(float dt)
+        // ecart : secondes reelles depuis l'image precedente (gel)
+        void Image(float dt, double ecart)
         {
             int n = rendu.sequences.Length;
+            // gel (28/11/2026, comme la visionneuse du site) : plus de ~0,75 s (et de 4 durees d'image) sans image —
+            // entree / sortie du mode immersif ou de l'AR, application en arriere-plan, casque retire — : le son est coupe
+            // et repart de l'image affichee, le temps ne saute jamais (avant : il rattrapait d'un coup la duree du gel)
+            if (m_Demarre && ecart > Math.Max(0.75, 4 * m_DureeImage)) ReprendreApresGel();
+            // le temps n'avance que lecture partie, hors pause, et si la derniere image n'etait pas tenue
+            if (m_Demarre && !m_Attente && !m_Paused)
+            {
+                Avancer(dt);
+                if (m_Time >= Duration)
+                {
+                    // bouclage : le son repart avec la premiere image dessinable (plus bas), sinon il attend avec le temps
+                    if (loop) { m_Time %= Duration; m_SonABoucler = true; }
+                    else { m_Time = Duration - 1e-4; Pause(); state = State.Idle; status = "fin"; }
+                }
+            }
             float frame = (float)(m_Time * rendu.fps);
             int k = SequenceAt(frame);
             // derniere chance : ce qui doit etre dessine maintenant et n'est pas encore entierement envoye
-            if (m_Pret) FinirSiNecessaire(frame, k);
-            if (!Dessinable(frame, k))
+            if (m_Demarre) FinirSiNecessaire(frame, k);
+            bool dessinable = Dessinable(frame, k);
+            if (!m_Demarre)
             {
-                if (m_Pret && !m_Attente) { m_Attente = true; stats.waits++; StopAudio(); state = State.Waiting; }
+                // depart selon le debit reel de preparation (premiere image deja dessinee pendant ce temps)
+                if (dessinable && PeutDemarrer(k))
+                {
+                    m_Demarre = true; m_Attente = false; m_SonABoucler = false; state = State.Playing;
+                    if (!m_Paused) StartAudio(m_Time); else Ancrer(m_Time, Reel);
+                }
+                else
+                {
+                    state = dessinable ? State.Waiting : State.Loading;
+                    int prets = 0; var f0 = Fenetre(k);
+                    foreach (int j in f0) if (Prete(j) != null) prets++;
+                    status = dessinable ? $"mise en memoire {prets}/{f0.Count}…" : $"chargement de la sequence {k + 1}…";
+                }
+            }
+            else if (!dessinable)
+            {
+                // sequence voulue pas prete : derniere image tenue, temps et son arretes (vitesse inchangee a la reprise)
+                if (!m_Attente) { m_Attente = true; stats.waits++; StopAudio(); m_SonABoucler = false; state = State.Waiting; }
+                if (m_Affiches.Count > 0) stats.heldFrames++;
                 status = $"chargement de la sequence {k + 1}…";
             }
-            else
+            else if (m_Attente || m_SonABoucler)
             {
-                if (!m_Pret || m_Attente)
-                {
-                    m_Pret = true; m_Attente = false; state = State.Playing;
-                    if (!m_Paused) StartAudio(m_Time);
-                }
-                if (!m_Paused)
-                {
-                    Avancer(dt);
-                    if (m_Time >= Duration)
-                    {
-                        if (loop) { m_Time %= Duration; StartAudio(m_Time); }
-                        else { m_Time = Duration - 1e-4; Pause(); state = State.Idle; status = "fin"; }
-                    }
-                    frame = (float)(m_Time * rendu.fps);
-                    k = SequenceAt(frame);
-                    FinirSiNecessaire(frame, k);
-                }
+                m_Attente = false; m_SonABoucler = false; state = State.Playing;
+                if (!m_Paused) StartAudio(m_Time); else Ancrer(m_Time, Reel);
             }
             currentFrame = frame;
             stats.clockRealtime = m_ReelImage;
 
             // fenetre de sequences en avance (preparations, jonctions), envois au GPU par morceaux, une activation
-            Alimenter(k, frame);
+            Alimenter(k, frame, !dessinable);
             Envoyer(k);
+            stats.memoryMB = (float)MemoireEstimee();
+            stats.keptAtStart = GardeesDebut();
+            stats.sortsSkipped = Gaussian4DSplatRenderer.sortsSkipped - m_TriesAvant;
+            if (!dessinable)
+            {
+                // image tenue : ce qui etait dessine reste a l'ecran tel quel (meme instant, memes poids, meme place), trie
+                // a nouveau si la camera bouge ; jamais d'ecran vide pendant une attente
+                foreach (var e in m_Entrees.Values)
+                    if (e.etape == Etape.Pret && e.pion != null) e.pion.renderer.suspended = !m_Affiches.Contains(e.cle);
+                return;
+            }
 
             // ce qui est dessine : dans un recouvrement, sa jonction (les deux sequences, poids continus), sinon la
             // sequence k ; sans jonction prete, les deux sequences fondues l'une sur l'autre (repli)
@@ -577,6 +643,7 @@ namespace GaussianSplatting4D.Runtime
             bool repli = A != null && B != null;
             float u = frame / Mathf.Max(rendu.total - 1, 1);
             Vector3 marche = rendu.trajectoire != null ? rendu.trajectoire.A((float)m_Time, rendu.fps) : Vector3.zero;
+            m_Affiches.Clear();
             foreach (var e in m_Entrees.Values)
             {
                 if (e.etape != Etape.Pret || e.pion == null) continue;
@@ -586,6 +653,7 @@ namespace GaussianSplatting4D.Runtime
                 else if (repli) dessine = e == A || e == B;
                 else dessine = !e.jonction && e.cle == k;
                 r.suspended = !dessine;
+                if (dessine) m_Affiches.Add(e.cle);
                 e.pion.go.transform.localPosition = marche;      // trajectoire : avant le cadrage, repere du modele
                 e.pion.player.previewTime = u;
                 if (dessine && e == J) { r.junctionSplit = e.split; r.junctionWeights = new Vector2(1 - s, s); r.m_RenderOrder = m_Ordre; }
@@ -598,7 +666,7 @@ namespace GaussianSplatting4D.Runtime
                 }
                 else { r.junctionSplit = 0; r.junctionWeights = Vector2.one; r.m_RenderOrder = m_Ordre; }
             }
-            if (m_Pret && !m_Attente)
+            if (m_Demarre)
                 status = J != null ? $"sequences {zone.a + 1}-{zone.a + 2}/{n} (fondu) · image {(int)frame}/{rendu.total}"
                                    : $"sequence {k + 1}/{n} · image {(int)frame}/{rendu.total}";
         }
@@ -652,25 +720,67 @@ namespace GaussianSplatting4D.Runtime
             return ((t % d) + d) % d;
         }
 
-        // Fenetre de sequences gardees a partir de k (ordre de lecture, boucle), jonctions entre elles et celle en
-        // cours ; le reste libere ; preparations lancees dans cet ordre (un telechargement a la fois, au plus
-        // m_NbDecodeurs preparations)
-        void Alimenter(int k, float frame)
+        int Capacite => Math.Max(2, m_Capacite > 0 ? m_Capacite : 2);
+
+        // fin de boucle (28/11/2026, visionneuse du site 20261127b) : premieres sequences du rendu gardees en memoire
+        // pendant toute la lecture, dans la fenetre (budget inchange : elles prennent des places de la fenetre, les autres
+        // glissent sur ce qui reste) ; 2 a partir de 6 places, 1 a partir de 4, aucune en dessous ni quand tout tient
+        int GardeesDebut()
         {
-            int n = rendu.sequences.Length, cap = Math.Max(2, m_Capacite > 0 ? m_Capacite : 2);
-            var fenetre = new List<int>(cap);
-            for (int i = 0; i < Math.Min(cap, n); i++)
+            int n = rendu.sequences.Length, cap = Capacite;
+            return loop && n > cap ? (cap >= 6 ? 2 : cap >= 4 ? 1 : 0) : 0;
+        }
+
+        // sequences gardees a partir de k, dans l'ordre de lecture (boucle), premieres sequences gardees comprises
+        List<int> Fenetre(int k)
+        {
+            int n = rendu.sequences.Length, cap = Math.Min(Capacite, n);
+            var r = new List<int>(cap);
+            if (!loop)
             {
-                int j = k + i;
-                if (j >= n) { if (!loop) break; j %= n; }
-                if (!fenetre.Contains(j)) fenetre.Add(j);
+                for (int j = k; j < n && r.Count < cap; j++) r.Add(j);
+                return r;
             }
+            int p = GardeesDebut();
+            for (int s = 0; s < n && r.Count < cap; s++)
+            {
+                int j = (k + s) % n;
+                int restantes = 0;                       // gardees du debut pas encore rencontrees
+                for (int g = 0; g < p; g++) if (g != j && !r.Contains(g)) restantes++;
+                if (j < p || r.Count + 1 + restantes <= cap) r.Add(j);
+            }
+            return r;
+        }
+
+        // fenetre ramenee a nb sequences : les plus lointaines partent d'abord, jamais la premiere ni les gardees du debut
+        List<int> Raccourcir(List<int> fen, int nb)
+        {
+            var r = new List<int>(fen);
+            int p = GardeesDebut();
+            for (int j = r.Count - 1; r.Count > nb && j > 0; j--) if (r[j] >= p) r.RemoveAt(j);
+            if (r.Count > nb) r.RemoveRange(nb, r.Count - nb);
+            return r;
+        }
+
+        // Fenetre de sequences gardees a partir de k (ordre de lecture, boucle), jonctions entre elles et celle en
+        // cours, et pendant une attente ce qui est tenu a l'ecran ; le reste libere ; preparations lancees dans cet
+        // ordre (un telechargement a la fois, au plus m_NbDecodeurs preparations, chacune seulement si sa place tient
+        // dans le budget memoire)
+        void Alimenter(int k, float frame, bool tenue)
+        {
+            var fenetre = Fenetre(k);
+            var fen = new HashSet<int>(fenetre);
             var garder = new HashSet<int>(fenetre);
             foreach (var z in m_Zones)
             {
-                if (garder.Contains(z.a) && garder.Contains(z.a + 1)) garder.Add(kJonction + z.a);
-                else if (garder.Contains(z.a + 1) && frame >= z.debut && frame < z.fin + 1) garder.Add(kJonction + z.a);   // fondu en cours
+                if (fen.Contains(z.a) && fen.Contains(z.a + 1)) garder.Add(kJonction + z.a);
+                else if (fen.Contains(z.a + 1) && frame >= z.debut && frame < z.fin + 1) garder.Add(kJonction + z.a);   // fondu en cours
             }
+            // image tenue (28/11/2026) : ce qui est dessine reste en memoire ; mobile (Quest) : pendant la tenue, pas de
+            // nouveau chargement au-dela de capacite - tenues (le budget compte la sequence tenue)
+            int tenues = 0;
+            if (tenue) foreach (int c in m_Affiches) if (garder.Add(c)) tenues++;
+            var charger = tenues > 0 && Mobile ? Raccourcir(fenetre, Math.Max(1, Capacite - tenues)) : fenetre;
             List<int> partir = null;
             foreach (var cle in m_Entrees.Keys) if (!garder.Contains(cle)) (partir ??= new List<int>()).Add(cle);
             if (partir != null)
@@ -692,8 +802,109 @@ namespace GaussianSplatting4D.Runtime
             bool telechargement = false;
             foreach (var e in m_Entrees.Values) telechargement |= e.telechargement;
             if (telechargement || EnCours() >= m_NbDecodeurs) return;
-            foreach (int j in fenetre)
-                if (!m_Entrees.ContainsKey(j)) { StartCoroutine(Preparer(j)); break; }
+            foreach (int j in charger)
+                if (!m_Entrees.ContainsKey(j)) { if (PlacePourDecodage()) StartCoroutine(Preparer(j)); break; }
+        }
+
+        // ---- budget memoire (28/11/2026, visionneuse du site 20261127h) : poids reels de la sequence la plus lourde de
+        // CE rendu. GPU : donnees du modele + tampons du rendu (vue 40 octets par gaussienne, tri 4 + 4 + 4 + 4, positions
+        // deplacees 12) ; processeur : donnees preparees, gardees jusqu'a la fin de l'envoi (et des jonctions voisines),
+        // et fichier compresse pendant le chargement. Estimation par etape : prete = GPU (+ donnees si gardees) ; envoi =
+        // GPU reserve + donnees ; chargement = fichier + donnees decodees. La capacite laisse la place d'une sequence en
+        // vol ; un decodage ne part que si sa place tient dans le budget.
+        const int kOctetsRenduParGaussienne = 68;
+        const double kMo = 1048576.0;
+        long m_GpuSeq, m_DonneesSeq, m_FichierSeq, m_GpuJonction;
+
+        static long PoidsGpu(Entree e) => e.octets + (long)kOctetsRenduParGaussienne * e.count;
+        // place d'une sequence prete (Mo) : la sequence et, avec le fondu, une jonction (≈ une sequence)
+        double MoParSeq => (m_GpuSeq + (m_Zones.Length > 0 ? (m_GpuJonction > 0 ? m_GpuJonction : m_GpuSeq) : 0)) / kMo;
+        // une sequence en vol (chargement : fichier + donnees ; envoi : GPU + donnees), le plus lourd, au-dela de sa place
+        double SurcoutVol => Math.Max(0, Math.Max(m_FichierSeq + m_DonneesSeq, m_GpuSeq + m_DonneesSeq) / kMo - MoParSeq);
+        double MoEnVol => (m_FichierSeq + m_DonneesSeq) / kMo;
+        bool Lourd => m_GpuSeq > 150 * kMo;
+
+        double MemoireEntree(Entree e)
+        {
+            switch (e.etape)
+            {
+                case Etape.Chargement:
+                    return e.jonction ? (m_GpuJonction > 0 ? m_GpuJonction : m_DonneesSeq) / kMo
+                                      : ((e.fichier > 0 ? e.fichier : m_FichierSeq) + m_DonneesSeq) / kMo;
+                case Etape.Envoi:
+                    return (PoidsGpu(e) + e.octets) / kMo;
+                default:
+                    return e.asset != null ? (PoidsGpu(e) + (e.prep != null ? e.octets : 0)) / kMo : 0;
+            }
+        }
+
+        // memoire estimee de tout ce que le lecteur tient maintenant (Mo)
+        double MemoireEstimee()
+        {
+            double mo = 0;
+            foreach (var e in m_Entrees.Values) mo += MemoireEntree(e);
+            return mo;
+        }
+
+        // capacite recalculee a chaque modele prepare, sur la plus lourde vue
+        void MajCapacite()
+        {
+            double p = MoParSeq;
+            if (p <= 0) return;
+            m_Capacite = (int)Math.Max(2, Math.Min(rendu.sequences.Length, Math.Floor((m_BudgetMB - SurcoutVol) / p)));
+            stats.capacity = m_Capacite;
+            stats.sequenceMB = (float)(m_GpuSeq / kMo);
+        }
+
+        // un decodage de plus : place reservee dans le budget ; mobile (Quest) : au plus une sequence en attente de son
+        // envoi, et pour les sequences lourdes 2 decodages et 1 envoi en attente au plus
+        bool PlacePourDecodage()
+        {
+            int enCours = 0, envois = 0, sequences = 0;
+            long attente = 0;
+            foreach (var e in m_Entrees.Values)
+            {
+                if (e.jonction) continue;
+                sequences++;
+                if (e.etape == Etape.Chargement) enCours++;
+                else if (e.etape == Etape.Envoi) { envois++; if (e.asset?.gpuData != null) attente += e.asset.gpuData.remainingBytes; }
+            }
+            if (m_GpuSeq == 0) return enCours < (Mobile ? 2 : m_NbDecodeurs);      // poids pas encore connu
+            // jamais bloque : la sequence voulue et la suivante se chargent toujours
+            if (enCours == 0 && sequences < 2) return true;
+            if (Mobile)
+            {
+                if (Lourd && (enCours >= 2 || envois > 1)) return false;
+                if (attente > 1.05 * m_DonneesSeq) return false;
+            }
+            return MemoireEstimee() + MoEnVol <= m_BudgetMB;
+        }
+
+        // depart (28/11/2026, visionneuse du site 20261127g) : fenetre pleine, ou preparation au moins 1,25 fois plus
+        // rapide que la lecture ET chaque sequence de la fenetre pas encore prete l'etant avant son tour au rythme mesure
+        // (marge 15 % + 0,5 s) ; vitesse de lecture jamais changee
+        bool PeutDemarrer(int k)
+        {
+            var fen = Fenetre(k);
+            int n = rendu.sequences.Length, prets = 0;
+            foreach (var e in m_Entrees.Values) if (!e.jonction && e.etape == Etape.Pret && e.pion != null) prets++;
+            double s = m_PremierDebut > 0 ? Reel - m_PremierDebut : 0;
+            float images = 0;
+            foreach (var q in rendu.sequences) images += q.images;
+            stats.prepRate = s > 0 ? (float)(prets / s) : 0;
+            stats.playRate = rendu.fps / Mathf.Max(1, images / Mathf.Max(1, n));
+            if (fen.TrueForAll(j => Prete(j) != null)) return true;
+            if (stats.prepRate < 1.25f * stats.playRate) return false;
+            double debut = 0;
+            int manquantes = 0;
+            for (int i = 0; i < fen.Count; i++)
+            {
+                if (i > 0) debut += rendu.sequences[fen[i - 1]].images / Math.Max(1.0, rendu.fps);
+                if (Prete(fen[i]) != null) continue;
+                manquantes++;
+                if (1.15 * manquantes / stats.prepRate + 0.5 > debut) return false;
+            }
+            return true;
         }
 
         int EnCours()
@@ -715,6 +926,7 @@ namespace GaussianSplatting4D.Runtime
         {
             var e = new Entree { cle = seq, etape = Etape.Chargement, gen = m_Gen };
             m_Entrees[seq] = e;
+            if (m_PremierDebut <= 0) m_PremierDebut = Reel;
             var info = rendu.sequences[seq];
             string path = info.url;
             if (info.octets > 0)
@@ -748,6 +960,8 @@ namespace GaussianSplatting4D.Runtime
                     m_Downloaded.Add(path);
                 }
             }
+            try { e.fichier = info.octets > 0 ? info.octets : new FileInfo(path.StartsWith("file:", StringComparison.OrdinalIgnoreCase) ? new Uri(path).LocalPath : path).Length; }
+            catch (Exception) { e.fichier = 0; }
             // preparation, recalage dans la video et fenetres sur un fil d'arriere-plan
             var chrono = System.Diagnostics.Stopwatch.StartNew();
             int total = rendu.total;
@@ -765,17 +979,8 @@ namespace GaussianSplatting4D.Runtime
             lastPrepareSeconds = (float)chrono.Elapsed.TotalSeconds;
             var prep = task.Result;
             if (!m_Cadree) { ApplyCadrage(prep.robustMin, prep.robustMax); m_Cadree = true; }
-            Monter(e, prep);
             e.prep = prep;
-            // capacite : sequences gardees selon le budget memoire, connue des la premiere preparee
-            if (m_OctetsSequence == 0)
-            {
-                m_OctetsSequence = e.octets;
-                stats.sequenceMB = e.octets / 1048576f;
-                long parSeq = e.octets * (m_Zones.Length > 0 ? 2 : 1);
-                m_Capacite = Mathf.Clamp((int)(m_BudgetMB * 1048576.0 / Math.Max(1, parSeq)), 2, rendu.sequences.Length);
-                stats.capacity = m_Capacite;
-            }
+            Monter(e, prep);
         }
 
         IEnumerator PreparerJonction(Zone z, GaussianSplatRuntimeLoader.Prepared A, GaussianSplatRuntimeLoader.Prepared B)
@@ -814,7 +1019,17 @@ namespace GaussianSplatting4D.Runtime
         {
             e.asset = GaussianSplatRuntimeLoader.CreateAssetGpu(p);
             e.octets = e.asset.gpuData.totalBytes;
+            e.count = p.splatCount;
             e.etape = Etape.Envoi;
+            // poids reels (le plus lourd vu) et capacite recalculee (28/11/2026)
+            if (e.jonction) m_GpuJonction = Math.Max(m_GpuJonction, PoidsGpu(e));
+            else
+            {
+                m_GpuSeq = Math.Max(m_GpuSeq, PoidsGpu(e));
+                m_DonneesSeq = Math.Max(m_DonneesSeq, e.octets);
+                m_FichierSeq = Math.Max(m_FichierSeq, e.fichier);
+            }
+            MajCapacite();
         }
 
         // Envois de l'image : morceaux des entrees en attente du GPU, la plus proche d'abord, dans un budget regle sur le
@@ -830,12 +1045,24 @@ namespace GaussianSplatting4D.Runtime
             m_Liste.Sort((x, y) => NecessaireDans(x, k).CompareTo(NecessaireDans(y, k)));
             const double Mo = 1048576.0;
             double lo = (Mobile ? 4 : 8) * Mo, hi = (Mobile ? 32 : 96) * Mo;
-            double normal = Math.Min(hi, Math.Max(lo, uploadMsPerFrame / Math.Max(1e-3, m_MsParMo) * Mo));
-            double budget = m_Pret ? normal : 4 * normal;
-            if (m_Pret && !m_Paused)
+            // 28/11/2026 : duree visee uploadMsPerFrame, ou 15 % de la duree d'une image quand elles sont longues (10 ms au
+            // plus) ; a 72 images/s, 4 ms comme avant
+            double cible = Math.Max(uploadMsPerFrame, Math.Min(10, 150 * m_DureeImage));
+            double normal = Math.Min(hi, Math.Max(lo, cible / Math.Max(1e-3, m_MsParMo) * Mo));
+            double budget = m_Demarre ? normal : 4 * normal;
+            if (m_Demarre && !m_Paused)
             {
-                double images = (NecessaireDans(m_Liste[0], k) - activateAhead) / Math.Max(1.0 / 120, m_DureeImage);
-                budget = Math.Min(3 * normal, Math.Max(budget, m_Liste[0].asset.gpuData.remainingBytes / Math.Max(1, images)));
+                // rythme regle sur TOUTES les entrees en attente (28/11/2026, comme la visionneuse du site) : ce qui doit
+                // etre sur le GPU avant la k-ieme (cumul, dans l'ordre ou la lecture les voudra), reparti sur les images
+                // qui restent d'ici la ; toujours au plus 3 fois le budget normal
+                double cumul = 0, voulu = 0;
+                foreach (var e in m_Liste)
+                {
+                    cumul += e.asset.gpuData.remainingBytes;
+                    double images = (NecessaireDans(e, k) - activateAhead) / Math.Max(1.0 / 120, m_DureeImage);
+                    voulu = Math.Max(voulu, cumul / Math.Max(1, images));
+                }
+                budget = Math.Min(3 * normal, Math.Max(budget, voulu));
             }
             stats.uploadBudgetMB = (float)(budget / Mo);
             var chrono = System.Diagnostics.Stopwatch.StartNew();
@@ -1078,6 +1305,15 @@ namespace GaussianSplatting4D.Runtime
         {
             foreach (var a in m_Audio) if (a) a.Stop();
             m_AudioOn = false;
+        }
+
+        // apres un gel (> 0,75 s sans image) : son coupe et reprogramme a l'image affichee, horloge ancree maintenant ;
+        // en pause ou pendant une attente, seulement l'ancre (le son est deja arrete)
+        void ReprendreApresGel()
+        {
+            stats.clockResumes++;
+            if (m_Attente || m_Paused || state != State.Playing) { StopAudio(); Ancrer(m_Time, Reel); return; }
+            StartAudio(m_Time);
         }
 
         // temps du rendu correspondant au son entendu (position lissee)

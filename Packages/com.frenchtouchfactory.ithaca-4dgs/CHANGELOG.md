@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Playback robustness (2026-11-28, port of the ITHACA web viewer 20261127h)
+No change needed in existing code; new statistics in `Gaussian4DSequencePlayer.stats`.
+- The character is never erased: when the sequence to play is not ready, the last picture drawn stays on screen
+  (same instant, same crossfade weights; sorted again if the camera moves), time and sound wait and resume together
+  at the same speed, also when looping (`stats.heldFrames`). Before, nothing was drawn while waiting.
+- No time jump after a freeze (entering / leaving immersive or AR mode, application in the background, headset
+  removed): beyond ~0.75 s without a frame, the sound is stopped and restarts from the picture displayed
+  (`stats.clockResumes`). Before, the clock caught up the whole freeze at once.
+- Memory budget held at all times: capacity recomputed on each prepared model from the real weight of the heaviest
+  sequence of the render (GPU: model data + render buffers, 68 bytes per gaussian; CPU: prepared data kept during the
+  upload; compressed file while loading), leaving room for one sequence in flight; a decode only starts if its place
+  fits in the budget; on mobile (Quest), at most one sequence waiting for its upload, and for heavy sequences
+  (> 150 MB) 2 decodes and 1 pending upload at most (`stats.memoryMB`, `stats.budgetMB`).
+- Loop end without reloading: the first sequences stay in memory during the whole playback, inside the window
+  (2 from 6 places, 1 from 4; `stats.keptAtStart`).
+- Start according to the real preparation rate: ready sequences per second compared with sequences played per second;
+  preparation less than 1.25 times faster than playback → start once the window is full, otherwise as soon as every
+  missing sequence of the window will be ready before its turn (`stats.prepRate`, `stats.playRate`). The first picture
+  is drawn while waiting (`State.Waiting`). Playback speed never changes.
+- GPU uploads paced on all pending sequences (cumulated), target `uploadMsPerFrame` or 15 % of a long frame (10 ms max).
+- `Gaussian4DSplatRenderer.m_SkipStillSorts` (on by default): 4D sort skipped when the drawn instant did not change and
+  the camera moved less than 1 % of the model's radius (pause, held picture, waiting); during playback the instant
+  changes every frame, so splats are sorted every frame as before (`Gaussian4DSplatRenderer.sortsSkipped`).
+
 ### Smooth playback (2026-11-24, port of the ITHACA JS player 0.4.0)
 No change needed in existing code: public fields, properties and methods keep their meaning; new options have
 automatic defaults.
